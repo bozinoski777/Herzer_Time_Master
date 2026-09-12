@@ -1,0 +1,16 @@
+{
+  "name": "herzer-time-master",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Herzer 2.0 POC Notion automation",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "check": "node --check scripts/notion.js && node --check scripts/onboard-workers.js && node --check scripts/sync-standorte.js && node --check scripts/sync-management.js",
+    "onboard-workers": "node scripts/onboard-workers.js",
+    "sync-standorte": "node scripts/sync-standorte.js",
+    "sync-management": "node scripts/sync-management.js"
+  }
+}

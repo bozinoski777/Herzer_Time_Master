@@ -1,0 +1,31 @@
+name: Onboard workers
+
+on:
+  schedule:
+    # Every UTC weekday at minute 17. Cron is UTC; see README for DST effects.
+    - cron: "17 * * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: herzer-notion-onboarding
+  cancel-in-progress: false
+
+jobs:
+  onboard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Provision pending workers
+        run: node scripts/onboard-workers.js
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          D1_DATA_SOURCE_ID: ${{ secrets.D1_DATA_SOURCE_ID }}
+          D8_DATA_SOURCE_ID: ${{ secrets.D8_DATA_SOURCE_ID }}
+          EMPLOYEE_FRONTEND_PAGE_ID: ${{ secrets.EMPLOYEE_FRONTEND_PAGE_ID }}
