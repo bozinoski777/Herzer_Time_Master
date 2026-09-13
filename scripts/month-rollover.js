@@ -581,8 +581,10 @@ function selectWorkers(rows, run) {
     (worker) => worker.workerKey === run.targetWorker || worker.name === run.targetWorker,
   );
   if (matches.length !== 1) {
+    const candidates = workers.map((worker) => worker.name).join(", ") || "(none)";
     throw new Error(
-      `ROLLOVER_TARGET_WORKER must match exactly one valid worker key or name; found ${matches.length} matches.`,
+      `ROLLOVER_TARGET_WORKER must match exactly one worker key or name; found ${matches.length} matches. ` +
+        `Valid rollover candidates: ${candidates}.`,
     );
   }
   const missing = missingRolloverReferences(matches[0]);
