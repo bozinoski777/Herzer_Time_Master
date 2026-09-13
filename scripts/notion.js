@@ -69,7 +69,13 @@ async function notion(path, options = {}) {
   const method = options.method || "GET";
   // Retrying an ambiguous create can produce a second page/database. Queries,
   // reads, and PATCHes are safe to repeat; creates are recovered by the caller.
-  const retrySafe = method === "GET" || method === "PATCH" || path.endsWith("/query");
+  // Appending block children is a PATCH, but it is not safely replayable: a
+  // successful request followed by a dropped response would create duplicate
+  // headings/toggles on retry. Callers recover such an ambiguous append by
+  // reading the page before attempting another append.
+  const appendsBlockChildren = /^\/blocks\/[^/]+\/children(?:\?|$)/.test(path);
+  const retrySafe =
+    (method === "GET" || method === "PATCH" || path.endsWith("/query")) && !appendsBlockChildren;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
     await waitForRequestSlot();
@@ -226,6 +232,15 @@ function archivePage(pageId) {
   });
 }
 
+/** Soft-remove a content block. This is used only for the code-owned legacy
+ * archive heading when replacing it with the requested H3 toggle. */
+function trashBlock(blockId) {
+  return notion(`/blocks/${blockId}`, {
+    method: "PATCH",
+    body: { in_trash: true },
+  });
+}
+
 function createPage(parent, properties, extra = {}) {
   return notion("/pages", {
     method: "POST",
@@ -266,15 +281,45 @@ function appendBlockChildren(blockId, children, afterBlockId) {
   });
 }
 
-function updateDataSource(dataSourceId, properties) {
+function updateDataSource(dataSourceId, properties = {}, attributes = {}) {
   return notion(`/data_sources/${dataSourceId}`, {
     method: "PATCH",
-    body: { properties },
+    body: {
+      ...attributes,
+      ...(Object.keys(properties).length > 0 ? { properties } : {}),
+    },
   });
 }
 
 function updateDatabase(databaseId, attributes) {
   return notion(`/databases/${databaseId}`, {
+    method: "PATCH",
+    body: attributes,
+  });
+}
+
+async function listAllViews(databaseId) {
+  const results = [];
+  let startCursor;
+
+  do {
+    const query = new URLSearchParams({ database_id: databaseId, page_size: "100" });
+    if (startCursor) query.set("start_cursor", startCursor);
+
+    const response = await notion(`/views?${query.toString()}`);
+    results.push(...response.results);
+    startCursor = response.has_more ? response.next_cursor : undefined;
+  } while (startCursor);
+
+  return results;
+}
+
+function getView(viewId) {
+  return notion(`/views/${viewId}`);
+}
+
+function updateView(viewId, attributes) {
+  return notion(`/views/${viewId}`, {
     method: "PATCH",
     body: attributes,
   });
@@ -326,6 +371,8 @@ module.exports = {
   getDataSource,
   getDatabase,
   getPage,
+  getView,
+  listAllViews,
   listAllBlockChildren,
   movePage,
   notion,
@@ -336,9 +383,11 @@ module.exports = {
   richTextValue,
   select,
   selectValue,
+  trashBlock,
   title,
   titleValue,
   updateDataSource,
   updateDatabase,
   updatePage,
+  updateView,
 };

@@ -21,12 +21,21 @@ const {
   richText,
   richTextValue,
   select,
+  trashBlock,
   title,
   titleValue,
   updateDataSource,
-  updateDatabase,
   updatePage,
 } = require("./notion");
+
+const {
+  ARCHIVE_DATABASE_TITLE,
+  CURRENT_MONTH_DATABASE_TITLE,
+  archiveSchemaProperties,
+  ensureArchivePresentation,
+  ensureCurrentMonthPresentation,
+  hideInternalFrontendColumnsInManagementView,
+} = require("./frontend-presentation");
 
 const { D1_DATA_SOURCE_ID: D1, D8_DATA_SOURCE_ID: D8 } = requireEnv(
   "D1_DATA_SOURCE_ID",
@@ -109,6 +118,11 @@ function berlinCurrentMonth() {
   return { year: part("year"), month: part("month") };
 }
 
+function berlinCurrentMonthKey() {
+  const { year, month } = berlinCurrentMonth();
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
 function currentMonthDates() {
   const { year, month } = berlinCurrentMonth();
   const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
@@ -129,30 +143,45 @@ function frontendUrl(page) {
   return page.url || `https://www.notion.so/${page.id.replaceAll("-", "")}`;
 }
 
-function headingBlock(text) {
+function heading3ToggleBlock(text) {
   return {
     object: "block",
-    type: "heading_2",
-    heading_2: { rich_text: [{ type: "text", text: { content: text } }] },
+    type: "heading_3",
+    heading_3: {
+      rich_text: [{ type: "text", text: { content: text } }],
+      is_toggleable: true,
+    },
   };
 }
 
-function isHeading(block, text) {
-  const richText = block?.heading_2?.rich_text || [];
-  return block?.type === "heading_2" && richText.map((item) => item.plain_text || "").join("") === text;
+function blockText(block) {
+  return (block?.[block?.type]?.rich_text || []).map((item) => item.plain_text || "").join("");
+}
+
+function isArchiveToggle(block) {
+  return block?.type === "heading_3" &&
+    blockText(block) === ARCHIVE_DATABASE_TITLE &&
+    block.heading_3?.is_toggleable === true;
+}
+
+function isLegacyArchiveHeading(block) {
+  return block?.type === "heading_2" && blockText(block) === ARCHIVE_DATABASE_TITLE;
 }
 
 async function updateD1(rowId, properties) {
   return updatePage(rowId, properties);
 }
 
-async function findExactChild(parentPageId, blockType, name) {
+async function findExactChild(parentPageId, blockType, names) {
+  const acceptedNames = new Set(Array.isArray(names) ? names : [names]);
   const matches = (await listAllBlockChildren(parentPageId)).filter(
-    (block) => block.type === blockType && block[blockType]?.title === name,
+    (block) => block.type === blockType && acceptedNames.has(block[blockType]?.title),
   );
 
   if (matches.length > 1) {
-    throw new Error(`Found multiple ${blockType} blocks named "${name}" under ${parentPageId}`);
+    throw new Error(
+      `Found multiple ${blockType} blocks named "${[...acceptedNames].join('" or "')}" under ${parentPageId}`,
+    );
   }
   return matches[0];
 }
@@ -198,7 +227,10 @@ async function validateSchema() {
   assertPropertyTypes(d1, D1_SCHEMA);
   const d8 = await getDataSource(D8);
   assertPropertyTypes(d8, { Standort: "title", Active: "checkbox" });
-  await frontendsDataSourceId();
+  const frontendsDataSource = await frontendsDataSourceId();
+  // This hides internal identifiers in the private management table. It does
+  // not remove either property or change any frontend row values.
+  await hideInternalFrontendColumnsInManagementView(frontendsDataSource);
 }
 
 async function activeStandorte() {
@@ -301,24 +333,25 @@ async function resolveWorkerPage(row, name, key) {
   return created;
 }
 
-function dayDatabaseProperties(standorte) {
+function dayDatabaseProperties(standorte, archive = false) {
   return {
     Wochentag: { title: {} },
     Datum: { date: {} },
     Stunden: { number: { format: "number" } },
     Tagtyp: { select: { options: TAGTYP_OPTIONS } },
     Standort: { select: { options: standorte.map((name) => ({ name, color: "blue" })) } },
+    ...(archive ? archiveSchemaProperties() : {}),
   };
 }
 
-async function createWorkerDatabase(parentPageId, databaseTitle, standorte) {
+async function createWorkerDatabase(parentPageId, databaseTitle, standorte, archive) {
   const database = await notion("/databases", {
     method: "POST",
     body: {
       parent: { type: "page_id", page_id: parentPageId },
       title: [{ type: "text", text: { content: databaseTitle } }],
       is_inline: true,
-      initial_data_source: { properties: dayDatabaseProperties(standorte) },
+      initial_data_source: { properties: dayDatabaseProperties(standorte, archive) },
     },
   });
   return {
@@ -346,7 +379,11 @@ async function resolveWorkerDatabase(row, parentPageId, labels) {
   if (databaseId && dataSourceId) return { databaseId, dataSourceId, created: false };
 
   // Recover after a crash between database creation and the immediate D1 write.
-  const existing = await findExactChild(parentPageId, "child_database", labels.title);
+  const existing = await findExactChild(
+    parentPageId,
+    "child_database",
+    labels.recoveryTitles || labels.title,
+  );
   if (existing) {
     databaseId = existing.id;
     dataSourceId = dataSourceIdFromDatabase(await getDatabase(databaseId));
@@ -357,7 +394,12 @@ async function resolveWorkerDatabase(row, parentPageId, labels) {
     return { databaseId, dataSourceId, created: false };
   }
 
-  const created = await createWorkerDatabase(parentPageId, labels.title, labels.standorte);
+  const created = await createWorkerDatabase(
+    parentPageId,
+    labels.title,
+    labels.standorte,
+    labels.archive,
+  );
   await updateD1(row.id, {
     [labels.databaseIdProperty]: richText(created.databaseId),
     [labels.dataSourceIdProperty]: richText(created.dataSourceId),
@@ -365,26 +407,46 @@ async function resolveWorkerDatabase(row, parentPageId, labels) {
   return { ...created, created: true };
 }
 
-async function ensureWorkingTimeHeading(pageId) {
-  const blocks = await listAllBlockChildren(pageId);
-  if (blocks.some((block) => isHeading(block, "Arbeitszeiten"))) return;
-  await appendBlockChildren(pageId, [headingBlock("Arbeitszeiten")]);
-}
-
-async function ensureArchiveHeadingAfterD3(pageId, d3DatabaseId) {
+async function ensureArchiveToggleAfterD3(pageId, d3DatabaseId) {
   const blocks = await listAllBlockChildren(pageId);
   const d3Index = blocks.findIndex((block) => block.id === d3DatabaseId);
   if (d3Index < 0) {
     throw new Error(`D3 database ${d3DatabaseId} is not a block inside worker page ${pageId}`);
   }
-  if (isHeading(blocks[d3Index + 1], "Archiv")) return;
-  // Insert after D3 so a following D4 is visibly under the archive heading.
-  await appendBlockChildren(pageId, [headingBlock("Archiv")], d3DatabaseId);
-}
 
-async function ensureInlineDatabase(databaseId) {
-  // Presentation-only: no data-store or time-entry rows are changed.
-  await updateDatabase(databaseId, { is_inline: true });
+  const archiveToggles = blocks.filter(isArchiveToggle);
+  if (archiveToggles.length > 1) {
+    throw new Error(`Worker page ${pageId} has multiple H3 Archiv toggles; refusing to create another.`);
+  }
+
+  let archiveToggle = archiveToggles[0];
+  if (archiveToggle && blocks[d3Index + 1]?.id !== archiveToggle.id) {
+    throw new Error(
+      `Worker page ${pageId} has an Archiv toggle outside the D3/D4 layout; refusing to move blocks automatically.`,
+    );
+  }
+  if (!archiveToggle) {
+    // The old onboarding implementation added an H2 heading. It is code-owned
+    // page chrome, so replace that recoverably rather than showing two Archiv
+    // labels on a resumed provisioning run.
+    const legacyHeadings = blocks.filter(isLegacyArchiveHeading);
+    if (legacyHeadings.length > 1) {
+      throw new Error(`Worker page ${pageId} has multiple legacy Archiv headings; refusing to create a toggle.`);
+    }
+    await appendBlockChildren(pageId, [heading3ToggleBlock(ARCHIVE_DATABASE_TITLE)], d3DatabaseId);
+
+    const refreshedBlocks = await listAllBlockChildren(pageId);
+    archiveToggle = refreshedBlocks.find(isArchiveToggle);
+    if (!archiveToggle) {
+      throw new Error(`Could not recover the H3 Archiv toggle on worker page ${pageId}`);
+    }
+    if (refreshedBlocks.filter(isArchiveToggle).length > 1) {
+      throw new Error(`Worker page ${pageId} has multiple H3 Archiv toggles after creation.`);
+    }
+  }
+
+  const legacyHeadings = (await listAllBlockChildren(pageId)).filter(isLegacyArchiveHeading);
+  if (legacyHeadings.length === 1) await trashBlock(legacyHeadings[0].id);
 }
 
 async function ensureStandortOptions(dataSourceId, standorte) {
@@ -458,25 +520,28 @@ async function provisionWorker(row) {
     const standorte = await activeStandorte();
     const workerPage = await resolveWorkerPage(row, name, key);
 
-    // Normal order: heading → D3 → archive heading → D4. Every created ID is
-    // written to D1 before the following stage, so a retry does not duplicate it.
-    await ensureWorkingTimeHeading(workerPage.id);
+    // D3 → H3 Archiv toggle → D4. Each database ID is written to D1 before the
+    // following stage, so a retry never creates a duplicate store or view.
+    const targetMonth = berlinCurrentMonthKey();
     const d3 = await resolveWorkerDatabase(row, workerPage.id, {
-      title: "D3 · Current Month",
+      title: CURRENT_MONTH_DATABASE_TITLE,
+      recoveryTitles: [CURRENT_MONTH_DATABASE_TITLE, "D3 · Current Month"],
       databaseIdProperty: "D3 Database ID",
       dataSourceIdProperty: "D3 Data Source ID",
       standorte,
     });
-    await ensureInlineDatabase(d3.databaseId);
+    await ensureCurrentMonthPresentation(d3.databaseId, d3.dataSourceId, targetMonth);
 
-    await ensureArchiveHeadingAfterD3(workerPage.id, d3.databaseId);
+    await ensureArchiveToggleAfterD3(workerPage.id, d3.databaseId);
     const d4 = await resolveWorkerDatabase(row, workerPage.id, {
-      title: "D4 · Archive",
+      title: ARCHIVE_DATABASE_TITLE,
+      recoveryTitles: [ARCHIVE_DATABASE_TITLE, "D4 · Archive"],
       databaseIdProperty: "D4 Database ID",
       dataSourceIdProperty: "D4 Data Source ID",
       standorte,
+      archive: true,
     });
-    await ensureInlineDatabase(d4.databaseId);
+    await ensureArchivePresentation(d4.databaseId, d4.dataSourceId);
 
     // Existing dates and active Standort options are preserved, never duplicated.
     const createdDayRows = await ensureCurrentMonthDayRows(d3.dataSourceId);
@@ -541,7 +606,15 @@ async function main() {
   }
 }
 
-main().catch((failure) => {
-  console.error(errorMessage(failure));
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((failure) => {
+    console.error(errorMessage(failure));
+    process.exitCode = 1;
+  });
+}
+
+module.exports = {
+  berlinCurrentMonthKey,
+  currentMonthDates,
+  dayDatabaseProperties,
+};

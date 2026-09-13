@@ -34,6 +34,8 @@ const {
   D8_DATA_SOURCE_ID: D8,
 } = requireEnv("D1_DATA_SOURCE_ID", "D8_DATA_SOURCE_ID");
 
+const { updateCurrentMonthViewForRollover } = require("./frontend-presentation");
+
 const BERLIN_TIME_ZONE = "Europe/Berlin";
 const WEEKDAYS = [
   "Sonntag",
@@ -557,6 +559,9 @@ async function rolloverWorker(worker, run) {
   const created = worker.active
     ? await ensureCurrentMonthRows(worker, run.targetMonth, remaining.map((entry) => entry.row))
     : 0;
+  // New worker frontends have a concrete date-range filter. Keep that filter
+  // aligned with the Berlin target month without restyling legacy D3 stores.
+  await updateCurrentMonthViewForRollover(worker.d3DataSourceId, run.targetMonth);
   const changed = oldMonths.length > 0 || created > 0;
 
   await setWorkerState(worker, {
