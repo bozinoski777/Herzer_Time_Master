@@ -12,6 +12,7 @@ const {
   getDataSource,
   getDatabase,
   getPage,
+  listAllBlockChildren,
   movePage,
   notion,
   queryAll,
