@@ -3,7 +3,6 @@
 const crypto = require("node:crypto");
 
 const {
-  appendBlockChildren,
   assertPropertyTypes,
   createPage,
   dataSourceIdFromDatabase,
@@ -13,7 +12,6 @@ const {
   getDataSource,
   getDatabase,
   getPage,
-  listAllBlockChildren,
   movePage,
   notion,
   queryAll,
@@ -21,7 +19,6 @@ const {
   richText,
   richTextValue,
   select,
-  trashBlock,
   title,
   titleValue,
   updateDataSource,
@@ -36,6 +33,7 @@ const {
   ensureCurrentMonthPresentation,
   hideInternalFrontendColumnsInManagementView,
 } = require("./frontend-presentation");
+const { workerStandortNames, workerStandortOptions } = require("./worker-standort-options");
 
 const { D1_DATA_SOURCE_ID: D1, D8_DATA_SOURCE_ID: D8 } = requireEnv(
   "D1_DATA_SOURCE_ID",
@@ -56,15 +54,6 @@ if (!EMPLOYEE_FRONTENDS_DATA_SOURCE_ID && !LEGACY_EMPLOYEE_FRONTEND_PAGE_ID) {
   );
 }
 
-const TAGTYP_OPTIONS = [
-  { name: "Arbeit", color: "green" },
-  { name: "Urlaub", color: "blue" },
-  { name: "Krank", color: "red" },
-  { name: "Feiertag", color: "purple" },
-  { name: "Sonderurlaub", color: "orange" },
-  { name: "Überstundenausgleich", color: "yellow" },
-];
-
 const WEEKDAYS = [
   "Sonntag",
   "Montag",
@@ -74,6 +63,7 @@ const WEEKDAYS = [
   "Freitag",
   "Samstag",
 ];
+const WORKER_FRONTEND_ICON = { type: "emoji", emoji: "👤" };
 
 const D1_SCHEMA = {
   "Vor- und Nachname": "title",
@@ -141,31 +131,6 @@ function d1Value(row, propertyName) {
 
 function frontendUrl(page) {
   return page.url || `https://www.notion.so/${page.id.replaceAll("-", "")}`;
-}
-
-function heading3ToggleBlock(text) {
-  return {
-    object: "block",
-    type: "heading_3",
-    heading_3: {
-      rich_text: [{ type: "text", text: { content: text } }],
-      is_toggleable: true,
-    },
-  };
-}
-
-function blockText(block) {
-  return (block?.[block?.type]?.rich_text || []).map((item) => item.plain_text || "").join("");
-}
-
-function isArchiveToggle(block) {
-  return block?.type === "heading_3" &&
-    blockText(block) === ARCHIVE_DATABASE_TITLE &&
-    block.heading_3?.is_toggleable === true;
-}
-
-function isLegacyArchiveHeading(block) {
-  return block?.type === "heading_2" && blockText(block) === ARCHIVE_DATABASE_TITLE;
 }
 
 async function updateD1(rowId, properties) {
@@ -257,7 +222,7 @@ async function setFrontendIndexProperties(pageId, name, key, d1RecordId) {
     "Vor- und Nachname": title(name),
     "Worker Key": richText(key),
     "D1 Record ID": richText(d1RecordId),
-  });
+  }, { icon: WORKER_FRONTEND_ICON });
 }
 
 async function findRecoverableFrontend(name, key, d1RecordId) {
@@ -326,7 +291,7 @@ async function resolveWorkerPage(row, name, key) {
       "Worker Key": richText(key),
       "D1 Record ID": richText(row.id),
     },
-    { icon: { type: "emoji", emoji: "👷" } },
+    { icon: WORKER_FRONTEND_ICON },
   );
   // Persist immediately: every later stage can recover this exact page.
   await persistFrontend(row.id, created);
@@ -338,8 +303,7 @@ function dayDatabaseProperties(standorte, archive = false) {
     Wochentag: { title: {} },
     Datum: { date: {} },
     Stunden: { number: { format: "number" } },
-    Tagtyp: { select: { options: TAGTYP_OPTIONS } },
-    Standort: { select: { options: standorte.map((name) => ({ name, color: "blue" })) } },
+    Standort: { select: { options: workerStandortOptions(standorte) } },
     ...(archive ? archiveSchemaProperties() : {}),
   };
 }
@@ -407,48 +371,6 @@ async function resolveWorkerDatabase(row, parentPageId, labels) {
   return { ...created, created: true };
 }
 
-async function ensureArchiveToggleAfterD3(pageId, d3DatabaseId) {
-  const blocks = await listAllBlockChildren(pageId);
-  const d3Index = blocks.findIndex((block) => block.id === d3DatabaseId);
-  if (d3Index < 0) {
-    throw new Error(`D3 database ${d3DatabaseId} is not a block inside worker page ${pageId}`);
-  }
-
-  const archiveToggles = blocks.filter(isArchiveToggle);
-  if (archiveToggles.length > 1) {
-    throw new Error(`Worker page ${pageId} has multiple H3 Archiv toggles; refusing to create another.`);
-  }
-
-  let archiveToggle = archiveToggles[0];
-  if (archiveToggle && blocks[d3Index + 1]?.id !== archiveToggle.id) {
-    throw new Error(
-      `Worker page ${pageId} has an Archiv toggle outside the D3/D4 layout; refusing to move blocks automatically.`,
-    );
-  }
-  if (!archiveToggle) {
-    // The old onboarding implementation added an H2 heading. It is code-owned
-    // page chrome, so replace that recoverably rather than showing two Archiv
-    // labels on a resumed provisioning run.
-    const legacyHeadings = blocks.filter(isLegacyArchiveHeading);
-    if (legacyHeadings.length > 1) {
-      throw new Error(`Worker page ${pageId} has multiple legacy Archiv headings; refusing to create a toggle.`);
-    }
-    await appendBlockChildren(pageId, [heading3ToggleBlock(ARCHIVE_DATABASE_TITLE)], d3DatabaseId);
-
-    const refreshedBlocks = await listAllBlockChildren(pageId);
-    archiveToggle = refreshedBlocks.find(isArchiveToggle);
-    if (!archiveToggle) {
-      throw new Error(`Could not recover the H3 Archiv toggle on worker page ${pageId}`);
-    }
-    if (refreshedBlocks.filter(isArchiveToggle).length > 1) {
-      throw new Error(`Worker page ${pageId} has multiple H3 Archiv toggles after creation.`);
-    }
-  }
-
-  const legacyHeadings = (await listAllBlockChildren(pageId)).filter(isLegacyArchiveHeading);
-  if (legacyHeadings.length === 1) await trashBlock(legacyHeadings[0].id);
-}
-
 async function ensureStandortOptions(dataSourceId, standorte) {
   const dataSource = await getDataSource(dataSourceId);
   const property = dataSource.properties?.Standort;
@@ -457,7 +379,7 @@ async function ensureStandortOptions(dataSourceId, standorte) {
   }
   const existing = property.select.options || [];
   const existingNames = new Set(existing.map((option) => option.name));
-  const additions = standorte.filter((name) => !existingNames.has(name));
+  const additions = workerStandortNames(standorte).filter((name) => !existingNames.has(name));
   if (additions.length === 0) return 0;
 
   await updateDataSource(dataSourceId, {
@@ -520,9 +442,8 @@ async function provisionWorker(row) {
     const standorte = await activeStandorte();
     const workerPage = await resolveWorkerPage(row, name, key);
 
-    // D3 → H3 Archiv toggle → D4. Each database ID is written to D1 before the
+    // D3 → D4. Each database ID is written to D1 before the
     // following stage, so a retry never creates a duplicate store or view.
-    const targetMonth = berlinCurrentMonthKey();
     const d3 = await resolveWorkerDatabase(row, workerPage.id, {
       title: CURRENT_MONTH_DATABASE_TITLE,
       recoveryTitles: [CURRENT_MONTH_DATABASE_TITLE, "D3 · Current Month"],
@@ -530,9 +451,8 @@ async function provisionWorker(row) {
       dataSourceIdProperty: "D3 Data Source ID",
       standorte,
     });
-    await ensureCurrentMonthPresentation(d3.databaseId, d3.dataSourceId, targetMonth);
+    await ensureCurrentMonthPresentation(d3.databaseId, d3.dataSourceId);
 
-    await ensureArchiveToggleAfterD3(workerPage.id, d3.databaseId);
     const d4 = await resolveWorkerDatabase(row, workerPage.id, {
       title: ARCHIVE_DATABASE_TITLE,
       recoveryTitles: [ARCHIVE_DATABASE_TITLE, "D4 · Archive"],

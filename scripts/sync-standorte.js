@@ -10,6 +10,7 @@ const {
   titleValue,
   updateDataSource,
 } = require("./notion");
+const { workerStandortNames } = require("./worker-standort-options");
 
 const {
   D1_DATA_SOURCE_ID: D1,
@@ -97,11 +98,11 @@ async function addMissingStandortOptions(dataSourceId, standorte) {
 async function main() {
   await validateSchema();
 
-  const standorte = await getActiveStandorte();
+  const standorte = workerStandortNames(await getActiveStandorte());
   const workers = await readyWorkers();
   const seenDataSources = new Set();
 
-  console.log(`Distributing ${standorte.length} active Standort option(s) to ${workers.length} worker(s).`);
+  console.log(`Distributing ${standorte.length} Standort/work option(s) to ${workers.length} worker(s).`);
 
   for (const worker of workers) {
     if (!worker.d3DataSourceId) {

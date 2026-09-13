@@ -7,10 +7,8 @@ const {
   ARCHIVE_MONTH_FORMULA,
   archiveSchemaProperties,
   archiveViewPayload,
-  currentMonthFilter,
   currentMonthViewPayload,
   managementViewProperties,
-  monthBounds,
 } = require("../scripts/frontend-presentation");
 
 function dataSource() {
@@ -21,7 +19,6 @@ function dataSource() {
       Datum: { id: "date", name: "Datum", type: "date" },
       Standort: { id: "site", name: "Standort", type: "select" },
       Stunden: { id: "hours", name: "Stunden", type: "number" },
-      Tagtyp: { id: "day-type", name: "Tagtyp", type: "select" },
       "Sync Key": { id: "sync", name: "Sync Key", type: "rich_text" },
       Monat: { id: "month", name: "Monat", type: "formula" },
       "Worker Key": { id: "worker-key", name: "Worker Key", type: "rich_text" },
@@ -31,25 +28,13 @@ function dataSource() {
   };
 }
 
-test("current-month filter is a concrete half-open calendar range", () => {
-  assert.deepEqual(monthBounds("2026-12"), {
-    firstDay: "2026-12-01",
-    nextMonth: "2027-01-01",
-  });
-  assert.deepEqual(currentMonthFilter("2028-02"), {
-    and: [
-      { property: "Datum", date: { on_or_after: "2028-02-01" } },
-      { property: "Datum", date: { before: "2028-03-01" } },
-    ],
-  });
-});
-
-test("D3 view shows only the requested worker columns in ascending date order", () => {
-  const payload = currentMonthViewPayload(dataSource(), "2026-09");
+test("D3 view has no date filter and shows worker columns in ascending date order", () => {
+  const payload = currentMonthViewPayload(dataSource());
   assert.deepEqual(payload.sorts, [{ property: "Datum", direction: "ascending" }]);
+  assert.equal("filter" in payload, false);
   assert.deepEqual(
     payload.configuration.properties.map((property) => property.property_id),
-    ["title", "date", "site", "hours", "day-type"],
+    ["title", "date", "site", "hours"],
   );
   assert.ok(payload.configuration.properties.every((property) => property.visible));
 });

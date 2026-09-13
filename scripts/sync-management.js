@@ -34,7 +34,6 @@ const D7_SCHEMA = {
   Wochentag: "title",
   Datum: "date",
   Stunden: "number",
-  Tagtyp: "select",
   Standort: "select",
   "Vor- und Nachname": "rich_text",
   "Worker Key": "rich_text",
@@ -107,7 +106,6 @@ function managementProperties(worker, sourcePage) {
 
   const weekday = titleValue(properties.Wochentag);
   const hours = properties.Stunden?.number ?? null;
-  const tagtyp = properties.Tagtyp?.select?.name || "";
   const standort = properties.Standort?.select?.name || "";
   const syncKey = `${worker.workerKey}|${datum}`;
 
@@ -117,7 +115,6 @@ function managementProperties(worker, sourcePage) {
       Wochentag: title(weekday),
       Datum: date(datum),
       Stunden: { number: hours },
-      Tagtyp: select(tagtyp),
       Standort: select(standort),
       "Vor- und Nachname": richText(worker.name),
       "Worker Key": richText(worker.workerKey),
@@ -139,7 +136,6 @@ async function syncWorker(worker, existingManagementRows) {
     Wochentag: "title",
     Datum: "date",
     Stunden: "number",
-    Tagtyp: "select",
     Standort: "select",
   });
 

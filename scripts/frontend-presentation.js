@@ -12,10 +12,8 @@ const {
   assertPropertyTypes,
   databaseIdFromDataSource,
   getDataSource,
-  getDatabase,
   getView,
   listAllViews,
-  plainText,
   updateDataSource,
   updateDatabase,
   updateView,
@@ -30,42 +28,14 @@ const DAY_SCHEMA = {
   Wochentag: "title",
   Datum: "date",
   Stunden: "number",
-  Tagtyp: "select",
   Standort: "select",
 };
 
-const D3_VISIBLE_COLUMNS = ["Wochentag", "Datum", "Standort", "Stunden", "Tagtyp"];
-const D4_VISIBLE_COLUMNS = ["Wochentag", "Datum", "Standort", "Stunden", "Tagtyp"];
+const D3_VISIBLE_COLUMNS = ["Wochentag", "Datum", "Standort", "Stunden"];
+const D4_VISIBLE_COLUMNS = ["Wochentag", "Datum", "Standort", "Stunden"];
 
 function textItems(content) {
   return [{ type: "text", text: { content } }];
-}
-
-function validMonth(targetMonth) {
-  if (!/^\d{4}-\d{2}$/.test(targetMonth || "")) return false;
-  const month = Number(targetMonth.slice(5, 7));
-  return month >= 1 && month <= 12;
-}
-
-function monthBounds(targetMonth) {
-  if (!validMonth(targetMonth)) throw new Error(`Invalid month "${targetMonth}"`);
-
-  const year = Number(targetMonth.slice(0, 4));
-  const month = Number(targetMonth.slice(5, 7));
-  const next = new Date(Date.UTC(year, month, 1));
-  const nextMonth = `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, "0")}-01`;
-
-  return { firstDay: `${targetMonth}-01`, nextMonth };
-}
-
-function currentMonthFilter(targetMonth) {
-  const { firstDay, nextMonth } = monthBounds(targetMonth);
-  return {
-    and: [
-      { property: "Datum", date: { on_or_after: firstDay } },
-      { property: "Datum", date: { before: nextMonth } },
-    ],
-  };
 }
 
 function propertyId(dataSource, propertyName) {
@@ -85,10 +55,9 @@ function viewProperties(dataSource, visibleNames, hiddenNames = []) {
   }));
 }
 
-function currentMonthViewPayload(dataSource, targetMonth) {
+function currentMonthViewPayload(dataSource) {
   assertPropertyTypes(dataSource, DAY_SCHEMA);
   return {
-    filter: currentMonthFilter(targetMonth),
     sorts: [{ property: "Datum", direction: "ascending" }],
     configuration: {
       type: "table",
@@ -190,10 +159,10 @@ async function ensureArchiveSchema(dataSourceId) {
   return dataSource;
 }
 
-async function configureCurrentMonthView(databaseId, dataSourceId, targetMonth) {
+async function configureCurrentMonthView(databaseId, dataSourceId) {
   const dataSource = await getDataSource(dataSourceId);
   const view = await defaultTableView(databaseId, dataSourceId);
-  await updateView(view.id, currentMonthViewPayload(dataSource, targetMonth));
+  await updateView(view.id, currentMonthViewPayload(dataSource));
 }
 
 async function configureArchiveView(databaseId, dataSourceId) {
@@ -202,9 +171,9 @@ async function configureArchiveView(databaseId, dataSourceId) {
   await updateView(view.id, archiveViewPayload(dataSource));
 }
 
-async function ensureCurrentMonthPresentation(databaseId, dataSourceId, targetMonth) {
+async function ensureCurrentMonthPresentation(databaseId, dataSourceId) {
   await setDatabaseAndDataSourceTitle(databaseId, dataSourceId, CURRENT_MONTH_DATABASE_TITLE);
-  await configureCurrentMonthView(databaseId, dataSourceId, targetMonth);
+  await configureCurrentMonthView(databaseId, dataSourceId);
 }
 
 async function ensureArchivePresentation(databaseId, dataSourceId) {
@@ -253,22 +222,6 @@ async function hideInternalFrontendColumnsInManagementView(dataSourceId) {
   });
 }
 
-/**
- * Rollover must update the D3's concrete date range, but it must not restyle
- * legacy D3 databases that pre-date this future-worker presentation. The exact
- * visible title is the migration marker written by onboarding.
- */
-async function updateCurrentMonthViewForRollover(dataSourceId, targetMonth) {
-  const dataSource = await getDataSource(dataSourceId);
-  const databaseId = databaseIdFromDataSource(dataSource);
-  const database = await getDatabase(databaseId);
-  if (plainText(database.title) !== CURRENT_MONTH_DATABASE_TITLE) return false;
-
-  const view = await defaultTableView(databaseId, dataSourceId);
-  await updateView(view.id, currentMonthViewPayload(dataSource, targetMonth));
-  return true;
-}
-
 module.exports = {
   ARCHIVE_DATABASE_TITLE,
   ARCHIVE_MONTH_FORMULA,
@@ -278,13 +231,10 @@ module.exports = {
   archiveViewPayload,
   configureArchiveView,
   configureCurrentMonthView,
-  currentMonthFilter,
   currentMonthViewPayload,
   ensureArchivePresentation,
   ensureArchiveSchema,
   ensureCurrentMonthPresentation,
   hideInternalFrontendColumnsInManagementView,
   managementViewProperties,
-  monthBounds,
-  updateCurrentMonthViewForRollover,
 };

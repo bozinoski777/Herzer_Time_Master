@@ -34,7 +34,7 @@ const {
   D8_DATA_SOURCE_ID: D8,
 } = requireEnv("D1_DATA_SOURCE_ID", "D8_DATA_SOURCE_ID");
 
-const { updateCurrentMonthViewForRollover } = require("./frontend-presentation");
+const { workerStandortNames } = require("./worker-standort-options");
 
 const BERLIN_TIME_ZONE = "Europe/Berlin";
 const WEEKDAYS = [
@@ -68,7 +68,6 @@ const DAY_SCHEMA = {
   Wochentag: "title",
   Datum: "date",
   Stunden: "number",
-  Tagtyp: "select",
   Standort: "select",
 };
 
@@ -283,7 +282,7 @@ async function activeStandorte() {
     property: "Active",
     checkbox: { equals: true },
   });
-  return uniqueNames(rows.map((row) => titleValue(row.properties.Standort)));
+  return workerStandortNames(rows.map((row) => titleValue(row.properties.Standort)));
 }
 
 /** Add values without omitting existing options: D4 is historical and immutable. */
@@ -312,8 +311,9 @@ async function addSelectOptions(dataSourceId, dataSource, propertyName, names) {
 
 /**
  * D3 is intentionally different: by this point old D3 rows are archived, so
- * the select list can become exactly the current active D8 list. D4 and D7
- * are never passed through this replacement function.
+ * the select list can become exactly the current active D8 list plus the
+ * standard work choices. D4 and D7 are never passed through this replacement
+ * function.
  */
 async function rebuildD3StandortOptions(dataSourceId, activeNames, currentRows) {
   const selectedInactive = selectNamesFromRows(currentRows, "Standort").filter(
@@ -321,7 +321,7 @@ async function rebuildD3StandortOptions(dataSourceId, activeNames, currentRows) 
   );
   if (selectedInactive.length > 0) {
     throw new Error(
-      `D3 contains current-month Standort value(s) no longer active in D8: ${selectedInactive.join(", ")}. ` +
+      `D3 contains current-month Standort value(s) outside active D8 sites and the standard work choices: ${selectedInactive.join(", ")}. ` +
         "Resolve those current-month entries before pruning D3 options.",
     );
   }
@@ -370,7 +370,6 @@ function archiveProperties(worker, sourceRow) {
       Wochentag: title(titleValue(properties.Wochentag)),
       Datum: cloneDateProperty(properties.Datum?.date),
       Stunden: { number: properties.Stunden?.number ?? null },
-      Tagtyp: select(properties.Tagtyp?.select?.name || ""),
       Standort: select(properties.Standort?.select?.name || ""),
       "Sync Key": richText(syncKey),
     },
@@ -408,8 +407,6 @@ function archiveValuesMatch(archiveRow, worker, sourceRow) {
     (actualDate?.end || null) === (expectedDate?.end || null) &&
     (actualDate?.time_zone || null) === (expectedDate?.time_zone || null) &&
     (archiveRow.properties.Stunden?.number ?? null) === (sourceRow.properties.Stunden?.number ?? null) &&
-    (archiveRow.properties.Tagtyp?.select?.name || "") ===
-      (sourceRow.properties.Tagtyp?.select?.name || "") &&
     (archiveRow.properties.Standort?.select?.name || "") ===
       (sourceRow.properties.Standort?.select?.name || "")
   );
@@ -424,13 +421,6 @@ async function archiveMonth(worker, sourceEntries) {
     "Standort",
     selectNamesFromRows(sourceEntries.map((entry) => entry.row), "Standort"),
   );
-  await addSelectOptions(
-    worker.d4DataSourceId,
-    await getDataSource(worker.d4DataSourceId),
-    "Tagtyp",
-    selectNamesFromRows(sourceEntries.map((entry) => entry.row), "Tagtyp"),
-  );
-
   const initialArchiveRows = await queryAll(worker.d4DataSourceId);
   const index = d4RowsByKeyAndDate(initialArchiveRows);
 
@@ -559,9 +549,6 @@ async function rolloverWorker(worker, run) {
   const created = worker.active
     ? await ensureCurrentMonthRows(worker, run.targetMonth, remaining.map((entry) => entry.row))
     : 0;
-  // New worker frontends have a concrete date-range filter. Keep that filter
-  // aligned with the Berlin target month without restyling legacy D3 stores.
-  await updateCurrentMonthViewForRollover(worker.d3DataSourceId, run.targetMonth);
   const changed = oldMonths.length > 0 || created > 0;
 
   await setWorkerState(worker, {

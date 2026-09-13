@@ -77,7 +77,7 @@ async function main() {
     ),
     textBlock(
       "bulleted_list_item",
-      "It copies each completed D3 day to the worker’s D4 archive using Worker Key|YYYY-MM-DD, preserving weekday, date, hours, day type, site, and historic sites that are no longer active.",
+      "It copies each completed D3 day to the worker’s D4 archive using Worker Key|YYYY-MM-DD, preserving weekday, date, hours, and the worker’s single Standort/work choice, including historic locations that are no longer active.",
     ),
     textBlock(
       "bulleted_list_item",
@@ -85,7 +85,7 @@ async function main() {
     ),
     textBlock(
       "bulleted_list_item",
-      "After verification, it soft-archives old D3 pages rather than permanently deleting them, then rebuilds D3 site choices from currently active D8 sites only.",
+      "After verification, it soft-archives old D3 pages rather than permanently deleting them, then rebuilds D3 Standort choices from currently active D8 sites plus the standard work choices.",
     ),
     textBlock(
       "bulleted_list_item",

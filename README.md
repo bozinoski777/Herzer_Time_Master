@@ -10,22 +10,19 @@ This repository automates only the **Herzer 2.0 → Secure Timekeeping POC**. It
 Employee Front-ends (management only)
 └── Worker name (the page shared with that one worker)
     ├── Aktueller Monat — inline, current-month table
-    ├── ### Archiv — H3 toggle
     └── Archiv — inline archive table
 ```
 
 The automation prepares pages and records invite readiness. It intentionally does **not** call a browser, invite guests, or change Notion sharing permissions: those actions are not part of the public Notion API and must remain a deliberate management step.
 
-### Worker-facing presentation and the two manual limits
+### Worker-facing presentation and the manual page-property setting
 
 For every future worker, onboarding sets the database and data-source titles exactly to **`Aktueller Monat`** and **`Archiv`**. It configures the automatically created default table views without creating extra views:
 
-- **Aktueller Monat:** only `Wochentag`, `Datum`, `Standort`, `Stunden`, and `Tagtyp`; sorted by `Datum` ascending; filtered to the concrete generated Berlin month (`Datum >= YYYY-MM-01` and `Datum < next YYYY-MM-01`). Month rollover changes that same filter to its next target month.
+- **Aktueller Monat:** only `Wochentag`, `Datum`, `Standort`, and `Stunden`; sorted by `Datum` ascending, with no date filter.
 - **Archiv:** sorted by `Datum` descending; grouped newest-first by derived formula `Monat = formatDate(prop("Datum"), "YYYY-MM")`; `Sync Key` and the technical `Monat` property are hidden from its worker-facing table view. The formula calculates for every archive row automatically, including rows created by later rollovers.
 
 The internal Employee Front-ends properties **`Worker Key`** and **`D1 Record ID`** remain intact for safe recovery and routing. Onboarding hides both columns in the identifiable default **management table view**, but Notion's public API does not offer an endpoint for the properties shown on an opened database row page. Make this one-time workspace setting in **Employee Front-ends → Customize layout → Properties**: hide `Worker Key` and `D1 Record ID` and apply the layout to every page in the database. This controls what a shared worker page exposes; hiding columns alone does not.
-
-Notion's public API can create an H3 toggle but can create a child database only under a **page**, not under a toggle block. Onboarding therefore puts an H3 toggle named **`Archiv`** immediately before the inline **`Archiv`** database, but cannot nest that database inside the toggle. For each newly created worker page, make one final presentation-only adjustment in Notion: drag the inline `Archiv` database one level under the `Archiv` H3 toggle. This does not change D4 rows, schema, Sync Keys, or sharing.
 
 After onboarding is `Ready` and `Sharing Status` is `Ready for Invite`:
 
@@ -38,8 +35,8 @@ Never give a worker access to D1, D7, D8, Control & Automation, Management, the 
 
 ## What runs
 
-- **Onboarding** finds `Active = true` D1 records whose `Onboarding Status` is `Pending` or `Provisioning`. It records `Provisioning`, generates a Worker Key if needed, creates or recovers exactly one worker page in `Employee Front-ends`, prepares D3 (`Aktueller Monat`), the H3 `Archiv` toggle, then D4 (`Archiv`), configures their existing default views, fills missing current-month D3 days, adds active D8 Standort options to D3 and D4, writes IDs immediately to D1, sets `Sharing Status = Ready for Invite`, then sets `Onboarding Status = Ready`.
-- **Standort sync** preserves the existing D8 → D3/D7 behavior: active D8 `Standort` values are added (never removed) to every active, ready worker D3 and D7.
+- **Onboarding** finds `Active = true` D1 records whose `Onboarding Status` is `Pending` or `Provisioning`. It records `Provisioning`, generates a Worker Key if needed, creates or recovers exactly one worker page in `Employee Front-ends`, prepares D3 (`Aktueller Monat`) then D4 (`Archiv`), configures their existing default views, fills missing current-month D3 days, adds active D8 Standort options and the work choices to D3 and D4, writes IDs immediately to D1, sets `Sharing Status = Ready for Invite`, then sets `Onboarding Status = Ready`.
+- **Standort sync** preserves the existing D8 → D3/D7 behavior: active D8 `Standort` values and the work choices are added (never removed) to every active, ready worker D3 and D7.
 - **Management sync** preserves the existing D3 → D7 behavior: `Worker Key|Datum` is the D7 `Sync Key`, so each source day is created once or updated idempotently. Blank values are also written, so D7 reflects a worker's corrections instead of retaining stale data.
 - **Month rollover** runs every day, including weekends. It uses the `Europe/Berlin` calendar month, not “the first of the month,” so a missed run catches up safely. It archives every completed D3 month for workers with valid D3/D4 references (including inactive workers), verifies the worker’s D4 archive before soft-archiving any D3 source rows, and creates the current month only for `Active = true` workers.
 
@@ -55,11 +52,11 @@ For every D3 month older than the current `Europe/Berlin` month, the workflow:
 
 1. Sets the worker’s D1 `Rollover Status` to `Running` and clears the earlier rollover error.
 2. Selects only that completed month’s D3 pages. D3 rows without a valid date, duplicate D3 dates, future dates, or ambiguous D4 records stop the worker safely with `Error`.
-3. Ensures D4 has a `Sync Key` property and adds every `Standort` (and any `Tagtyp`) used in the source rows **without removing any historic option**.
-4. Upserts D4 with `Worker Key|YYYY-MM-DD`, preserving `Wochentag`, `Datum`, `Stunden`, `Tagtyp`, `Standort`, and `Sync Key`. A retry updates the existing archive row rather than creating another one.
+3. Ensures D4 has a `Sync Key` property and adds every `Standort` value used in the source rows **without removing any historic option**.
+4. Upserts D4 with `Worker Key|YYYY-MM-DD`, preserving `Wochentag`, `Datum`, `Stunden`, `Standort`, and `Sync Key`. A retry updates the existing archive row rather than creating another one.
 5. Re-queries D4 and verifies that each expected archive row exists exactly once and has the source values. If this barrier fails, D3 is not touched.
 6. Soft-archives the old D3 source pages with the Notion page-archive API. It never hard-deletes a page. A fresh D3 query verifies that those pages are no longer visible.
-7. Rebuilds the worker D3 `Standort` select from only currently `Active = true` D8 sites. This happens only after the old month is safely hidden; D4 and D7 options are never pruned.
+7. Rebuilds the worker D3 `Standort` select from currently `Active = true` D8 sites plus the six standard work choices. This happens only after the old month is safely hidden; D4 and D7 options are never pruned.
 8. For active workers only, creates missing daily rows for the current month. Every retry checks `Datum` first, so it can resume after a partial generation without duplicates. Inactive workers finish with an empty D3 after their final archive.
 9. Records `Current Month`, `Last Archived Month`, `Last Rollover At`, and `Rollover Status = Ready` in D1. Any failure remains visible in `Rollover Error` and a later run resumes from the safe barrier.
 
@@ -97,18 +94,24 @@ Configure the Notion integration with **read content**, **update content**, and 
 | --- | --- |
 | **D1** | `Vor- und Nachname` (Title), `Email` (Email), `Active` (Checkbox), `Onboarding Status` (Select), `Onboarding Error` (Text), `Onboarded At` (Date), `Worker Key` (Text), `Frontend Page ID` (Text), `Frontend URL` (URL), `Sharing Status` (Select), `User Page ID` (legacy Text), `D3 Database ID` (Text), `D3 Data Source ID` (Text), `D4 Database ID` (Text), `D4 Data Source ID` (Text), `Current Month` (Text), `Last Archived Month` (Text), `Last Rollover At` (Date), `Rollover Status` (Select: `Ready` / `Running` / `Error`), `Rollover Error` (Text) |
 | **Employee Front-ends** | `Vor- und Nachname` (Title), `Worker Key` (Text), `D1 Record ID` (Text) |
-| **D3** created by onboarding | `Wochentag` (Title), `Datum` (Date), `Stunden` (Number), `Tagtyp` (Select), `Standort` (Select) |
-| **D4** | `Wochentag` (Title), `Datum` (Date), `Stunden` (Number), `Tagtyp` (Select), `Standort` (Select), `Sync Key` (Text), `Monat` (Formula: `formatDate(prop("Datum"), "YYYY-MM")`) |
-| **D7** | `Wochentag` (Title), `Datum` (Date), `Stunden` (Number), `Tagtyp` (Select), `Standort` (Select), `Vor- und Nachname` (Text), `Worker Key` (Text), `Sync Key` (Text), `Source Page ID` (Text), `Source Database ID` (Text), `Last Synced At` (Date) |
+| **D3** created by onboarding | `Wochentag` (Title), `Datum` (Date), `Stunden` (Number), `Standort` (Select: active locations plus `Arbeit`, `Urlaub`, `Krank`, `Feiertag`, `Sonderurlaub`, and `Überstundenausgleich`) |
+| **D4** | `Wochentag` (Title), `Datum` (Date), `Stunden` (Number), `Standort` (Select), `Sync Key` (Text), `Monat` (Formula: `formatDate(prop("Datum"), "YYYY-MM")`) |
+| **D7** | `Wochentag` (Title), `Datum` (Date), `Stunden` (Number), `Standort` (Select), `Vor- und Nachname` (Text), `Worker Key` (Text), `Sync Key` (Text), `Source Page ID` (Text), `Source Database ID` (Text), `Last Synced At` (Date) |
 | **D8** | `Standort` (Title), `Active` (Checkbox) |
 
-`Onboarding Status` must include `Pending`, `Provisioning`, `Ready`, and `Error`. `Sharing Status` must include `Not Invited`, `Ready for Invite`, and `Invited`. Keep the D7 `Tagtyp` options aligned with D3: `Arbeit`, `Urlaub`, `Krank`, `Feiertag`, `Sonderurlaub`, and `Überstundenausgleich`.
+`Onboarding Status` must include `Pending`, `Provisioning`, `Ready`, and `Error`. `Sharing Status` must include `Not Invited`, `Ready for Invite`, and `Invited`. D3 and D7 `Standort` use the same combined location/work-choice list.
+
+## Legacy `Tagtyp` removal
+
+This deployment does not change existing POC rows on its own. The new manual **Migrate legacy Tagtyp to Standort** workflow is the guarded one-time path for D3, D4, and D7 data sources reached only from the configured D1/D7 POC secrets; it accepts no free-form workspace or database ID.
+
+Run it first with **execute** unchecked. That is a read-only preflight. If it finds a row where both `Standort` and `Tagtyp` have different values, it stops before any write: a single select cannot preserve both values without a management choice. Resolve those rows in Notion, then run it again with **execute** checked. The apply run adds the old day-type choices to `Standort`, moves a legacy value only when `Standort` is blank, verifies each moved row, removes the legacy `Tagtyp` property, and reconfigures the affected D3/D4 worker views. It is resumable after an interrupted run.
 
 ## Failure and recovery behavior
 
 - New Worker Key, frontend-page ID/URL, and D3/D4 IDs are saved to D1 as soon as the relevant object exists.
 - Current-month day creation checks each `Datum` first; it never recreates an existing date.
-- Standort synchronization preserves all existing select options before adding D8 values.
+- Standort synchronization preserves all existing select options before adding active D8 sites and the standard work choices.
 - New D4 databases include `Sync Key` and the derived `Monat` formula from the start. The formula is read-only row data derived from `Datum`, so rollover never has to write a month value or alter existing D4 upserts.
 - Rollover verifies the complete D4 archive before soft-archiving D3. It has no hard-delete code path. Re-running after a partial archive reuses D4 `Sync Key` records and creates only missing current-month D3 days.
 - `Provisioning` records resume automatically. `Error` records remain visible with their diagnostic in D1 until management deliberately changes them back to `Pending`.
@@ -124,10 +127,11 @@ GitHub Actions cron is always **UTC**.
 | Onboard workers | `17 * * * 1-5` | Every UTC weekday at `:17` |
 | Daily sync | `17 6,14 * * 1-5` | 06:17 and 14:17 UTC on UTC weekdays |
 | Month rollover | `17 3 * * *` | Every day at 03:17 UTC, including weekends |
+| Migrate legacy Tagtyp to Standort | — | Manual only; read-only unless **execute** is checked |
 
 GitHub Actions cron is **always UTC**. Germany is UTC+1 during CET and UTC+2 during CEST, so daily sync runs occur at **07:17 / 15:17 CET** in winter and **08:17 / 16:17 CEST** in summer. Rollover runs at **04:17 CET** in winter and **05:17 CEST** in summer. The script itself decides the month using `Europe/Berlin`, so a DST change cannot cause it to roll at the wrong calendar boundary. Use **Run workflow** in GitHub Actions for exceptional local-time or holiday runs.
 
-All three Notion-mutating workflows use one shared `herzer-notion-mutations` concurrency group. GitHub queues a later run instead of allowing onboarding, daily sync, and rollover to mutate the same POC records at the same time.
+All Notion-mutating workflows use one shared `herzer-notion-mutations` concurrency group. GitHub queues a later run instead of allowing onboarding, daily sync, rollover, and the guarded migration to mutate the same POC records at the same time.
 
 ## Controlled POC simulation
 

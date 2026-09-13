@@ -71,7 +71,7 @@ async function notion(path, options = {}) {
   // reads, and PATCHes are safe to repeat; creates are recovered by the caller.
   // Appending block children is a PATCH, but it is not safely replayable: a
   // successful request followed by a dropped response would create duplicate
-  // headings/toggles on retry. Callers recover such an ambiguous append by
+  // content blocks on retry. Callers recover such an ambiguous append by
   // reading the page before attempting another append.
   const appendsBlockChildren = /^\/blocks\/[^/]+\/children(?:\?|$)/.test(path);
   const retrySafe =
@@ -232,15 +232,6 @@ function archivePage(pageId) {
   });
 }
 
-/** Soft-remove a content block. This is used only for the code-owned legacy
- * archive heading when replacing it with the requested H3 toggle. */
-function trashBlock(blockId) {
-  return notion(`/blocks/${blockId}`, {
-    method: "PATCH",
-    body: { in_trash: true },
-  });
-}
-
 function createPage(parent, properties, extra = {}) {
   return notion("/pages", {
     method: "POST",
@@ -383,7 +374,6 @@ module.exports = {
   richTextValue,
   select,
   selectValue,
-  trashBlock,
   title,
   titleValue,
   updateDataSource,
