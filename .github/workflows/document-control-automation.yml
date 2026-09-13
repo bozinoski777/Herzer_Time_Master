@@ -1,0 +1,28 @@
+name: Document POC month rollover
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Documentation is a Notion write too, so it cannot overlap with an archive,
+# onboarding, or D3→D7 synchronization run.
+concurrency:
+  group: herzer-notion-mutations
+  cancel-in-progress: false
+
+jobs:
+  document:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Add the guarded Control & Automation runbook section
+        run: node scripts/document-control-automation.js
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          D1_DATA_SOURCE_ID: ${{ secrets.D1_DATA_SOURCE_ID }}

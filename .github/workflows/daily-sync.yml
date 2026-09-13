@@ -10,7 +10,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: herzer-notion-daily-sync
+  # Shared by every workflow that writes to the Herzer 2.0 POC. In particular,
+  # D3→D7 sync must not read D3 while month-rollover is archiving its old rows.
+  group: herzer-notion-mutations
   cancel-in-progress: false
 
 jobs:

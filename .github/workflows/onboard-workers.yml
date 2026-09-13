@@ -10,7 +10,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: herzer-notion-onboarding
+  # Shared by every workflow that writes to the Herzer 2.0 POC, including
+  # rollover and daily D3→D7 synchronization.
+  group: herzer-notion-mutations
   cancel-in-progress: false
 
 jobs:

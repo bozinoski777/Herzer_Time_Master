@@ -8,9 +8,12 @@
     "node": ">=22"
   },
   "scripts": {
-    "check": "node --check scripts/notion.js && node --check scripts/onboard-workers.js && node --check scripts/sync-standorte.js && node --check scripts/sync-management.js",
+    "check": "node --check scripts/notion.js && node --check scripts/onboard-workers.js && node --check scripts/sync-standorte.js && node --check scripts/sync-management.js && node --check scripts/month-rollover.js && node --check scripts/document-control-automation.js",
+    "test": "node --test test/*.test.js",
     "onboard-workers": "node scripts/onboard-workers.js",
     "sync-standorte": "node scripts/sync-standorte.js",
-    "sync-management": "node scripts/sync-management.js"
+    "sync-management": "node scripts/sync-management.js",
+    "month-rollover": "node scripts/month-rollover.js",
+    "document-control-automation": "node scripts/document-control-automation.js"
   }
 }

@@ -205,10 +205,22 @@ function getPage(pageId) {
   return notion(`/pages/${pageId}`);
 }
 
-function updatePage(pageId, properties) {
+function updatePage(pageId, properties, extra = {}) {
   return notion(`/pages/${pageId}`, {
     method: "PATCH",
-    body: { properties },
+    body: { properties, ...extra },
+  });
+}
+
+/**
+ * Soft-remove a Notion page. This is intentionally the only removal primitive
+ * exposed to the POC: archive keeps the source page recoverable and avoids any
+ * hard-delete path during a month rollover.
+ */
+function archivePage(pageId) {
+  return notion(`/pages/${pageId}`, {
+    method: "PATCH",
+    body: { archived: true },
   });
 }
 
@@ -302,6 +314,7 @@ function assertPropertyTypes(dataSource, expectedTypes) {
 module.exports = {
   NOTION_VERSION,
   appendBlockChildren,
+  archivePage,
   assertPropertyTypes,
   createPage,
   dataSourceIdFromDatabase,

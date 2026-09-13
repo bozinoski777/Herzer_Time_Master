@@ -1,0 +1,57 @@
+name: Archive completed month and prepare current month
+
+on:
+  schedule:
+    # Every day at 03:17 UTC, including weekends. Cron is UTC: this is 04:17
+    # during CET and 05:17 during CEST; month-rollover.js uses Europe/Berlin
+    # calendar dates, so DST never changes the month decision.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      target_worker:
+        description: "Optional exact Worker Key or employee name; required when simulating."
+        required: false
+        type: string
+      simulation:
+        description: "Opt in to a simulated Berlin current date (never used by the schedule)."
+        required: false
+        default: false
+        type: boolean
+      simulated_current_date:
+        description: "Simulation only: YYYY-MM-DD, for example 2026-10-01."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+# This is deliberately the same group as onboarding and daily sync. A queued
+# job is safer than overlapping Notion writes to the same D3/D4/D7 records.
+concurrency:
+  group: herzer-notion-mutations
+  cancel-in-progress: false
+
+jobs:
+  rollover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Archive completed D3 months and prepare D3
+        run: node scripts/month-rollover.js
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          D1_DATA_SOURCE_ID: ${{ secrets.D1_DATA_SOURCE_ID }}
+          D8_DATA_SOURCE_ID: ${{ secrets.D8_DATA_SOURCE_ID }}
+          # Kept empty until the one-worker simulation has been approved. A
+          # disabled scheduled run exits before it reads or changes Notion.
+          ROLLOVER_LIVE_ENABLED: ${{ secrets.ROLLOVER_LIVE_ENABLED }}
+          # These expressions yield empty strings for scheduled runs. The
+          # script additionally rejects any simulated value unless GitHub says
+          # the event is workflow_dispatch.
+          ROLLOVER_TARGET_WORKER: ${{ inputs.target_worker || '' }}
+          ROLLOVER_SIMULATION: ${{ inputs.simulation && 'true' || 'false' }}
+          ROLLOVER_SIMULATED_CURRENT_DATE: ${{ inputs.simulation && inputs.simulated_current_date || '' }}
