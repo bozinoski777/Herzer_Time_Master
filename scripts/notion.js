@@ -220,7 +220,9 @@ function updatePage(pageId, properties, extra = {}) {
 function archivePage(pageId) {
   return notion(`/pages/${pageId}`, {
     method: "PATCH",
-    body: { archived: true },
+    // Notion API 2026-03-11 removed the former `archived` alias. `in_trash`
+    // is recoverable and is the only supported soft-removal mechanism.
+    body: { in_trash: true },
   });
 }
 
