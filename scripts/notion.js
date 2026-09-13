@@ -235,10 +235,20 @@ function movePage(pageId, parent) {
  * Append (or insert after a known block) content blocks in a page. Callers
  * recover after any ambiguous network failure by checking the page first.
  */
-function appendBlockChildren(blockId, children, after) {
+function appendBlockChildren(blockId, children, afterBlockId) {
   return notion(`/blocks/${blockId}/children`, {
     method: "PATCH",
-    body: { children, ...(after ? { after } : {}) },
+    body: {
+      children,
+      ...(afterBlockId
+        ? {
+            position: {
+              type: "after_block",
+              after_block: { id: afterBlockId },
+            },
+          }
+        : {}),
+    },
   });
 }
 
