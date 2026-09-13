@@ -1,66 +1,82 @@
 # Herzer 2.0 POC — Timekeeping automation
 
-This repository provisions isolated employee timekeeping databases and copies their current-month day records into one management database. It is deliberately limited to the **Herzer 2.0 Secure Timekeeping POC** IDs below. It never stores a Notion token in the repository.
+This repository automates only the **Herzer 2.0 → Secure Timekeeping POC**. It never stores a Notion token in the repository and must not be pointed at the live Generat or front-end v1 setup.
+
+## Worker front-end and sharing model
+
+`Employee Front-ends` is a **private management-only Notion database**. Each row is the worker's actual front-end page and its title is exactly the D1 `Vor- und Nachname` value.
+
+```text
+Employee Front-ends (management only)
+└── Worker name (the page shared with that one worker)
+    ├── Arbeitszeiten
+    │   └── D3 · Current Month — inline
+    └── Archiv
+        └── D4 · Archive — inline
+```
+
+The automation prepares pages and records invite readiness. It intentionally does **not** call a browser, invite guests, or change Notion sharing permissions: those actions are not part of the public Notion API and must remain a deliberate management step.
+
+After onboarding is `Ready` and `Sharing Status` is `Ready for Invite`:
+
+1. Open the worker's D1 **Frontend URL**.
+2. Invite the D1 **Email** address manually in Notion.
+3. Apply the intended permissions manually: front-end page **Can view** (or the minimum editing permission genuinely needed), D3 **Can edit content**, D4 **Can view**.
+4. Change D1 **Sharing Status** to `Invited`.
+
+Never give a worker access to D1, D7, D8, Control & Automation, Management, the `Employee Front-ends` database, another worker's page, or the legacy migration page. Share only their individual front-end page and configure D3/D4 access separately.
 
 ## What runs
 
-- **Onboarding** finds D1 records where `Active = true` and `Onboarding Status = Pending`, creates or recovers the worker's private page, `D3 · Current Month`, and `D4 · Archive`, then creates the current calendar month's D3 rows.
-- **Standort sync** reads active D8 rows and adds their `Standort` names to the `Standort` Select options in every `Active + Ready` worker D3 and in D7. It only adds options; old options are never removed.
-- **Management sync** uses `Worker Key|Datum` as the D7 `Sync Key`. Each D3 day either creates that one D7 row or updates it. Null hours and cleared `Tagtyp`/`Standort` values are written too, so D7 mirrors subsequent corrections rather than retaining stale values.
+- **Onboarding** finds `Active = true` D1 records whose `Onboarding Status` is `Pending` or `Provisioning`. It records `Provisioning`, generates a Worker Key if needed, creates or recovers exactly one worker page in `Employee Front-ends`, prepares inline D3 then inline D4, fills missing current-month D3 days, adds active D8 Standort options to D3 and D4, writes IDs immediately to D1, sets `Sharing Status = Ready for Invite`, then sets `Onboarding Status = Ready`.
+- **Standort sync** preserves the existing D8 → D3/D7 behavior: active D8 `Standort` values are added (never removed) to every active, ready worker D3 and D7.
+- **Management sync** preserves the existing D3 → D7 behavior: `Worker Key|Datum` is the D7 `Sync Key`, so each source day is created once or updated idempotently. Blank values are also written, so D7 reflects a worker's corrections instead of retaining stale data.
+
+If a workflow stops at any point, a later run reuses D1 IDs first. If an ID is absent, it checks the one deterministic front-end row and the worker page's exact D3/D4 titles before creating anything. A legacy worker page under the approved Secure Timekeeping POC locations is moved into the index without copying its D3/D4 databases or their rows. Ambiguous matches are treated as errors rather than duplicated.
 
 ## POC configuration
 
-The workflows read these values from **GitHub Actions secrets**. The IDs are not credentials, but keeping all runtime configuration in secrets makes the workflows portable and prevents accidental edits to the POC target.
+Store runtime values as **GitHub Actions secrets**. The IDs are not credentials, but this prevents accidental changes to the POC target. `NOTION_TOKEN` must never be committed or printed.
 
 | GitHub Actions secret | Herzer 2.0 POC value |
 | --- | --- |
-| `NOTION_TOKEN` | Create this value in Notion; never commit it. |
+| `NOTION_TOKEN` | The dedicated Herzer Time Master internal-integration token. |
 | `D1_DATA_SOURCE_ID` | `bc10543d-d221-4da5-bd6b-c964b78b86c0` |
 | `D7_DATA_SOURCE_ID` | `9c0f539e-239f-4e4c-9c4f-a8b81f74597a` |
 | `D8_DATA_SOURCE_ID` | `c414e818-b278-4ade-80a5-2ede57506655` |
-| `EMPLOYEE_FRONTEND_PAGE_ID` | `3d980779-bf2a-8129-b4c8-c13efb2423ee` |
+| `EMPLOYEE_FRONTENDS_DATA_SOURCE_ID` | `f9c03999-d2e6-4fcb-a13f-3f9fc71a3ceb` |
+| `EMPLOYEE_FRONTEND_PAGE_ID` | `3d980779-bf2a-8129-b4c8-c13efb2423ee` — legacy migration fallback; retain while old workflow configuration remains. |
 
-### Add the secrets
+Add or update them in **Herzer_Time_Master → Settings → Secrets and variables → Actions**. The onboarding workflow prefers `EMPLOYEE_FRONTENDS_DATA_SOURCE_ID`; if it is temporarily empty, it safely discovers the index from the legacy POC page ID and refuses to look anywhere else.
 
-1. In GitHub, open **Herzer_Time_Master → Settings → Secrets and variables → Actions → New repository secret**.
-2. Create all five entries from the table exactly, including the hyphens in the POC IDs.
-3. Keep `NOTION_TOKEN` private. Do not put it in a local shell history, issue, pull request, workflow log, or source file.
-
-### Configure the Notion integration
-
-Create an internal Notion integration and use its secret as `NOTION_TOKEN`. Give it **read**, **insert content**, and **update content** capabilities, then share these POC resources with the integration:
+Configure the Notion integration with **read content**, **update content**, and **insert content**, then connect it only to the Secure Timekeeping POC resources it needs:
 
 - D1 · User Data
 - D7 · Management Consolidated
 - D8 · Standorte & Project Control
-- Employee Front-end (the parent page)
-
-The integration needs access to both the parent page and the data sources: it creates child pages/databases, reads data source schemas and rows, updates D1/D7 pages, and changes `Standort` Select options. The scripts use Notion API version `2026-03-11`, which treats databases as containers and performs row/schema operations through data sources. See Notion’s [database creation](https://developers.notion.com/reference/create-database), [data-source update](https://developers.notion.com/reference/update-a-data-source), and [data-source query](https://developers.notion.com/reference/query-a-data-source) documentation.
+- Employee Front-ends
+- the legacy `Employee Front-end – migrated` page only while the fallback secret remains in use
 
 ## Required Notion schema
 
-The scripts validate these exact property names and types before writing data. Do not rename them without updating the scripts.
-
 | Resource | Required properties |
 | --- | --- |
-| **D1** | `Vor- und Nachname` (Title), `Active` (Checkbox), `Onboarding Status` (Select), `Onboarding Error` (Text), `Onboarded At` (Date), `Worker Key` (Text), `User Page ID` (Text), `D3 Database ID` (Text), `D3 Data Source ID` (Text), `D4 Database ID` (Text), `D4 Data Source ID` (Text) |
+| **D1** | `Vor- und Nachname` (Title), `Email` (Email), `Active` (Checkbox), `Onboarding Status` (Select), `Onboarding Error` (Text), `Onboarded At` (Date), `Worker Key` (Text), `Frontend Page ID` (Text), `Frontend URL` (URL), `Sharing Status` (Select), `User Page ID` (legacy Text), `D3 Database ID` (Text), `D3 Data Source ID` (Text), `D4 Database ID` (Text), `D4 Data Source ID` (Text) |
+| **Employee Front-ends** | `Vor- und Nachname` (Title), `Worker Key` (Text), `D1 Record ID` (Text) |
 | **D3** created by onboarding | `Wochentag` (Title), `Datum` (Date), `Stunden` (Number), `Tagtyp` (Select), `Standort` (Select) |
 | **D7** | `Wochentag` (Title), `Datum` (Date), `Stunden` (Number), `Tagtyp` (Select), `Standort` (Select), `Vor- und Nachname` (Text), `Worker Key` (Text), `Sync Key` (Text), `Source Page ID` (Text), `Source Database ID` (Text), `Last Synced At` (Date) |
 | **D8** | `Standort` (Title), `Active` (Checkbox) |
 
-Keep the `Tagtyp` options in D7 aligned with D3: `Arbeit`, `Urlaub`, `Krank`, `Feiertag`, `Sonderurlaub`, and `Überstundenausgleich`.
-`Onboarding Status` in D1 must include `Pending`, `Provisioning`, `Ready`, and `Error`.
+`Onboarding Status` must include `Pending`, `Provisioning`, `Ready`, and `Error`. `Sharing Status` must include `Not Invited`, `Ready for Invite`, and `Invited`. Keep the D7 `Tagtyp` options aligned with D3: `Arbeit`, `Urlaub`, `Krank`, `Feiertag`, `Sonderurlaub`, and `Überstundenausgleich`.
 
-## Recovery and safety behavior
+## Failure and recovery behavior
 
-The scripts intentionally favor detection over creating a duplicate object.
-
-- Onboarding writes the worker page ID and each D3/D4 database/data-source ID to D1 immediately after it is created.
-- If a run stops between Notion creation and that write, the next run also looks under Employee Front-end / the worker page for a single exact-name match before creating anything.
-- Existing D1 IDs are reused. A `Provisioning` row is picked up on the next run; an `Error` row is not retried until a person changes its status back to `Pending`.
-- A provisioning failure is written into D1 as `Onboarding Status = Error` plus `Onboarding Error` text. The Action then fails so it is visible in GitHub.
-- D7 refuses to run if it already contains duplicate non-empty `Sync Key` values, and it refuses duplicate dates within one worker D3. This prevents the automation from adding more duplicates; resolve any legacy duplicate in Notion, then rerun the workflow.
-- No script is run by local validation in this repository. They only contact Notion when a GitHub Action or an explicit `node scripts/...` command is run with a token.
+- New Worker Key, frontend-page ID/URL, and D3/D4 IDs are saved to D1 as soon as the relevant object exists.
+- Current-month day creation checks each `Datum` first; it never recreates an existing date.
+- Standort synchronization preserves all existing select options before adding D8 values.
+- `Provisioning` records resume automatically. `Error` records remain visible with their diagnostic in D1 until management deliberately changes them back to `Pending`.
+- D7 refuses to create more data when it finds duplicate non-empty `Sync Key` values or duplicate dates in one worker D3.
+- Static validation never contacts Notion. Scripts only make API calls in GitHub Actions or when explicitly run with a token.
 
 ## Schedules and manual runs
 
@@ -71,15 +87,11 @@ GitHub Actions cron is always **UTC**.
 | Onboard workers | `17 * * * 1-5` | Every UTC weekday at `:17` |
 | Daily sync | `17 6,14 * * 1-5` | 06:17 and 14:17 UTC on UTC weekdays |
 
-Germany is UTC+1 during CET and UTC+2 during CEST, so the daily runs occur at **07:17 / 15:17 CET** in winter and **08:17 / 16:17 CEST** in summer. The clock time shifts automatically at daylight-saving transitions; GitHub does not adjust the cron. UTC weekdays also govern the schedule, so use **Run workflow** for an exceptional local-time or holiday run.
-
-Both workflows have a concurrency guard. A later run waits instead of overlapping an active run, avoiding two automations provisioning or syncing the same records concurrently.
-
-To run manually, open **Actions**, select **Onboard workers** or **Sync Standorte and management**, then choose **Run workflow**.
+Germany is UTC+1 during CET and UTC+2 during CEST, so daily runs occur at **07:17 / 15:17 CET** in winter and **08:17 / 16:17 CEST** in summer. Use **Run workflow** in GitHub Actions for exceptional local-time or holiday runs.
 
 ## Local static check
 
-Node 22 or later is sufficient; there are no npm dependencies. This check validates JavaScript syntax only and never calls Notion:
+Node 22 or later is sufficient; there are no npm dependencies. This syntax-only check never contacts Notion:
 
 ```bash
 npm run check

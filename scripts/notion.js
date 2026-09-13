@@ -219,10 +219,40 @@ function createPage(parent, properties, extra = {}) {
   });
 }
 
+/**
+ * Move one regular page without copying its content. This is used by the
+ * onboarding migration path to turn a legacy worker page into a row in the
+ * private Employee Front-ends data source.
+ */
+function movePage(pageId, parent) {
+  return notion(`/pages/${pageId}/move`, {
+    method: "POST",
+    body: { parent },
+  });
+}
+
+/**
+ * Append (or insert after a known block) content blocks in a page. Callers
+ * recover after any ambiguous network failure by checking the page first.
+ */
+function appendBlockChildren(blockId, children, after) {
+  return notion(`/blocks/${blockId}/children`, {
+    method: "PATCH",
+    body: { children, ...(after ? { after } : {}) },
+  });
+}
+
 function updateDataSource(dataSourceId, properties) {
   return notion(`/data_sources/${dataSourceId}`, {
     method: "PATCH",
     body: { properties },
+  });
+}
+
+function updateDatabase(databaseId, attributes) {
+  return notion(`/databases/${databaseId}`, {
+    method: "PATCH",
+    body: attributes,
   });
 }
 
@@ -261,6 +291,7 @@ function assertPropertyTypes(dataSource, expectedTypes) {
 
 module.exports = {
   NOTION_VERSION,
+  appendBlockChildren,
   assertPropertyTypes,
   createPage,
   dataSourceIdFromDatabase,
@@ -271,6 +302,7 @@ module.exports = {
   getDatabase,
   getPage,
   listAllBlockChildren,
+  movePage,
   notion,
   plainText,
   queryAll,
@@ -282,5 +314,6 @@ module.exports = {
   title,
   titleValue,
   updateDataSource,
+  updateDatabase,
   updatePage,
 };

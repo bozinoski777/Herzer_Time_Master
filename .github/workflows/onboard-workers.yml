@@ -28,4 +28,7 @@ jobs:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           D1_DATA_SOURCE_ID: ${{ secrets.D1_DATA_SOURCE_ID }}
           D8_DATA_SOURCE_ID: ${{ secrets.D8_DATA_SOURCE_ID }}
+          EMPLOYEE_FRONTENDS_DATA_SOURCE_ID: ${{ secrets.EMPLOYEE_FRONTENDS_DATA_SOURCE_ID }}
+          # Backward-compatible discovery only; keep this while migrating the
+          # existing action configuration to the new data-source secret.
           EMPLOYEE_FRONTEND_PAGE_ID: ${{ secrets.EMPLOYEE_FRONTEND_PAGE_ID }}
