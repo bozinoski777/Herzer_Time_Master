@@ -213,7 +213,15 @@ function workerFromRow(row) {
 }
 
 function hasCompleteRolloverReferences(worker) {
-  return Boolean(worker.workerKey && worker.d3DataSourceId && worker.d4DataSourceId);
+  return missingRolloverReferences(worker).length === 0;
+}
+
+function missingRolloverReferences(worker) {
+  return [
+    ...(worker.workerKey ? [] : ["Worker Key"]),
+    ...(worker.d3DataSourceId ? [] : ["D3 Data Source ID"]),
+    ...(worker.d4DataSourceId ? [] : ["D4 Data Source ID"]),
+  ];
 }
 
 async function ensureD1RolloverSchema() {
@@ -565,15 +573,23 @@ async function rolloverWorker(worker, run) {
 }
 
 function selectWorkers(rows, run) {
-  const workers = rows.map(workerFromRow).filter(hasCompleteRolloverReferences);
+  const allWorkers = rows.map(workerFromRow);
+  const workers = allWorkers.filter(hasCompleteRolloverReferences);
   if (!run.targetWorker) return workers;
 
-  const matches = workers.filter(
+  const matches = allWorkers.filter(
     (worker) => worker.workerKey === run.targetWorker || worker.name === run.targetWorker,
   );
   if (matches.length !== 1) {
     throw new Error(
       `ROLLOVER_TARGET_WORKER must match exactly one valid worker key or name; found ${matches.length} matches.`,
+    );
+  }
+  const missing = missingRolloverReferences(matches[0]);
+  if (missing.length > 0) {
+    throw new Error(
+      `${matches[0].name} is not a safe rollover target because D1 is missing: ${missing.join(", ")}. ` +
+        "Complete onboarding/migration first; no D3 or D4 data was changed.",
     );
   }
   return matches;
