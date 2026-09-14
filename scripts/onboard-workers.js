@@ -607,8 +607,29 @@ async function provisionWorker(row) {
   }
 }
 
+function executionMode(args = process.argv.slice(2)) {
+  const modes = args.filter((arg) => ["--validate-only", "--provision-only"].includes(arg));
+  if (modes.length > 1) {
+    throw new Error("Use at most one of --validate-only or --provision-only");
+  }
+  if (modes.length === 1) {
+    return modes[0] === "--validate-only" ? "validate" : "provision";
+  }
+  return "full";
+}
+
 async function main() {
-  await validateSchema();
+  const mode = executionMode();
+  if (mode !== "provision") {
+    console.log("Stage: validating Notion POC schemas and frontend layout.");
+    await validateSchema();
+  }
+  if (mode === "validate") {
+    console.log("Preflight complete; no worker pages or time-entry databases were provisioned.");
+    return;
+  }
+
+  console.log("Stage: finding pending workers and provisioning their frontends, D3, KPI, and D4.");
   // Provisioning resumes an interrupted run. Error rows need an intentional
   // human change back to Pending, so diagnostic failures cannot loop forever.
   const candidates = await queryAll(D1, {
@@ -649,6 +670,7 @@ module.exports = {
   berlinCurrentMonthKey,
   currentMonthDates,
   dayDatabaseProperties,
+  executionMode,
   frontendProperties,
   manualOnboardingChecklistBlocks,
 };

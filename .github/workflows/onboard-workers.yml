@@ -16,7 +16,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  onboard:
+  validate:
+    name: "1 · Validate POC setup"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate Notion schemas and worker-frontend layout
+        run: node scripts/onboard-workers.js --validate-only
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          D1_DATA_SOURCE_ID: ${{ secrets.D1_DATA_SOURCE_ID }}
+          D8_DATA_SOURCE_ID: ${{ secrets.D8_DATA_SOURCE_ID }}
+          EMPLOYEE_FRONTENDS_DATA_SOURCE_ID: ${{ secrets.EMPLOYEE_FRONTENDS_DATA_SOURCE_ID }}
+          # Backward-compatible discovery only; keep this while migrating the
+          # existing action configuration to the new data-source secret.
+          EMPLOYEE_FRONTEND_PAGE_ID: ${{ secrets.EMPLOYEE_FRONTEND_PAGE_ID }}
+
+  provision:
+    name: "2 · Worker page, D3, Urlaub KPI & Archiv"
+    needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -24,8 +46,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Provision pending workers
-        run: node scripts/onboard-workers.js
+      - name: Create frontend, Aktueller Monat, Urlaub KPI, and Archiv
+        run: node scripts/onboard-workers.js --provision-only
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           D1_DATA_SOURCE_ID: ${{ secrets.D1_DATA_SOURCE_ID }}

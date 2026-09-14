@@ -15,6 +15,7 @@ process.env.EMPLOYEE_FRONTENDS_DATA_SOURCE_ID = "test-frontends";
 
 const {
   dayDatabaseProperties,
+  executionMode,
   frontendProperties,
   manualOnboardingChecklistBlocks,
 } = require("../scripts/onboard-workers");
@@ -34,6 +35,16 @@ test("Standort combines active sites and the former day-type choices once", () =
   assert.deepEqual(options.find((option) => option.name === "Berlin"), { name: "Berlin", color: "blue" });
   assert.deepEqual(options.find((option) => option.name === "Krank"), { name: "Krank", color: "red" });
   assert.equal(options.length, WORK_TYPE_OPTIONS.length + 1);
+});
+
+test("onboarding workflow modes keep preflight separate from provisioning", () => {
+  assert.equal(executionMode([]), "full");
+  assert.equal(executionMode(["--validate-only"]), "validate");
+  assert.equal(executionMode(["--provision-only"]), "provision");
+  assert.throws(
+    () => executionMode(["--validate-only", "--provision-only"]),
+    /at most one/,
+  );
 });
 
 test("new worker D3/D4 schemas use one Standort select and no Tagtyp property", () => {
