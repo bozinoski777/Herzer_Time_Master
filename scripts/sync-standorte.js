@@ -98,11 +98,14 @@ function selectedStandortNames(rows) {
 }
 
 function optionForUpdate(existing, desired) {
-  return {
-    ...(existing?.id ? { id: existing.id } : {}),
-    name: desired.name,
-    color: desired.color,
-  };
+  // Notion permits a color when a select option is created, but rejects a
+  // color update for an existing option ID. Preserve existing options exactly
+  // as they are; new options still receive the intended worker-facing color.
+  if (existing?.id) {
+    return { id: existing.id, name: existing.name };
+  }
+
+  return { name: desired.name, color: desired.color };
 }
 
 /**
@@ -127,14 +130,17 @@ function planD3StandortOptions(existingOptions, desiredOptions, rows) {
   const added = desiredOptions
     .map((option) => option.name)
     .filter((name) => !existingByName.has(name));
-  const currentPresentation = existingOptions.map((option) => ({ name: option.name, color: option.color }));
-  const nextPresentation = nextOptions.map((option) => ({ name: option.name, color: option.color }));
+  // Existing option colors are intentionally not part of the update plan:
+  // the public API rejects changing them. The names/order determine whether
+  // the option list needs a safe reconciliation.
+  const currentNames = existingOptions.map((option) => option.name);
+  const nextNames = nextOptions.map((option) => option.name);
 
   return {
     added,
     removed,
     nextOptions,
-    changed: JSON.stringify(currentPresentation) !== JSON.stringify(nextPresentation),
+    changed: JSON.stringify(currentNames) !== JSON.stringify(nextNames),
   };
 }
 
