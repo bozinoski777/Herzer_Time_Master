@@ -33,6 +33,7 @@ const {
   updateDataSource,
   updatePage,
   updateView,
+  writableViewProperties,
 } = require("./notion");
 
 const {
@@ -337,7 +338,10 @@ async function ensureD1RolloverSchema() {
   for (const view of views.filter(
     (candidate) => routingKey(candidate.data_source_id) === routingKey(D1) && candidate.type === "table",
   )) {
-    const existing = view.configuration?.properties || [];
+    const existing = writableViewProperties(
+      dataSource,
+      view.configuration?.properties || [],
+    );
     const seen = existing.some((entry) => entry.property_id === manifestPropertyId);
     const properties = existing.map((entry) =>
       entry.property_id === manifestPropertyId ? { ...entry, visible: false } : entry,

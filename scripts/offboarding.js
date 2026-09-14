@@ -8,6 +8,7 @@ const {
   listAllViews,
   updateDataSource,
   updateView,
+  writableViewProperties,
 } = require("./notion");
 const { reconcileSelectOptions } = require("./select-options");
 
@@ -170,7 +171,7 @@ function offboardingViewProperties(dataSource, configuration = {}) {
       return property.id;
     }),
   );
-  const existing = configuration.properties || [];
+  const existing = writableViewProperties(dataSource, configuration.properties || []);
   const seen = new Set();
   const properties = existing.map((entry) => {
     seen.add(entry.property_id);

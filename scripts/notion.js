@@ -338,6 +338,41 @@ function writableViewUpdate(attributes) {
   return { ...attributes, configuration };
 }
 
+function canonicalPropertyId(value) {
+  const text = String(value || "");
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
+
+/**
+ * Reconcile property entries returned by Retrieve View with the current data
+ * source schema. Views can retain deleted property IDs, and property IDs may
+ * be returned URL-encoded in one endpoint but decoded in another. Update View
+ * rejects those stale/ambiguous identifiers, so always send the canonical ID
+ * from the current data-source response and omit anything no longer present.
+ */
+function writableViewProperties(dataSource, entries = []) {
+  const identifiers = new Map();
+  for (const [name, property] of Object.entries(dataSource?.properties || {})) {
+    if (!property?.id) continue;
+    identifiers.set(canonicalPropertyId(property.id), property.id);
+    identifiers.set(canonicalPropertyId(name), property.id);
+  }
+
+  const seen = new Set();
+  const properties = [];
+  for (const entry of entries || []) {
+    const propertyId = identifiers.get(canonicalPropertyId(entry?.property_id));
+    if (!propertyId || seen.has(propertyId)) continue;
+    seen.add(propertyId);
+    properties.push({ ...entry, property_id: propertyId });
+  }
+  return properties;
+}
+
 function updateView(viewId, attributes) {
   return notion(`/views/${viewId}`, {
     method: "PATCH",
@@ -411,5 +446,6 @@ module.exports = {
   updateDatabase,
   updatePage,
   updateView,
+  writableViewProperties,
   writableViewUpdate,
 };

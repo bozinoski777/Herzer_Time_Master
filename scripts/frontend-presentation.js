@@ -20,6 +20,7 @@ const {
   updateDataSource,
   updateDatabase,
   updateView,
+  writableViewProperties,
 } = require("./notion");
 
 const CURRENT_MONTH_DATABASE_TITLE = "Aktueller Monat";
@@ -352,7 +353,7 @@ function managementViewProperties(dataSource, configuration = {}) {
   const hiddenIds = new Set(
     [...hiddenNames].map((name) => propertyId(dataSource, name)),
   );
-  const existing = configuration.properties || [];
+  const existing = writableViewProperties(dataSource, configuration.properties || []);
   const seen = new Set();
   const properties = existing.map((entry) => {
     const isHidden = hiddenIds.has(entry.property_id) || hiddenNames.has(entry.property_id);

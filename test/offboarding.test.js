@@ -153,7 +153,10 @@ test("D1 table configuration makes every offboarding status/checklist field visi
     "D4 Access Revoked",
   ];
   const dataSource = {
-    properties: Object.fromEntries(names.map((name, index) => [name, { id: `p${index}` }])),
+    properties: {
+      Unrelated: { id: "unrelated" },
+      ...Object.fromEntries(names.map((name, index) => [name, { id: `p${index}` }])),
+    },
   };
   const properties = offboardingViewProperties(dataSource, {
     properties: [
