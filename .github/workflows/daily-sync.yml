@@ -1,4 +1,4 @@
-name: Sync Standorte and management
+name: Daily worker sync
 
 on:
   schedule:
@@ -16,7 +16,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  sync:
+  management:
+    name: "1 · Upsert worker days into management"
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -24,16 +25,27 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Distribute active Standort options
+      - name: Upsert D3 worker days into D7 management
+        run: node scripts/sync-management.js
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          D1_DATA_SOURCE_ID: ${{ secrets.D1_DATA_SOURCE_ID }}
+          D7_DATA_SOURCE_ID: ${{ secrets.D7_DATA_SOURCE_ID }}
+
+  standorte:
+    name: "2 · Sync active D3 Standort options"
+    needs: management
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Add active and remove unused inactive D3 Standort options
         run: node scripts/sync-standorte.js
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           D1_DATA_SOURCE_ID: ${{ secrets.D1_DATA_SOURCE_ID }}
           D7_DATA_SOURCE_ID: ${{ secrets.D7_DATA_SOURCE_ID }}
           D8_DATA_SOURCE_ID: ${{ secrets.D8_DATA_SOURCE_ID }}
-      - name: Upsert worker days into management
-        run: node scripts/sync-management.js
-        env:
-          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-          D1_DATA_SOURCE_ID: ${{ secrets.D1_DATA_SOURCE_ID }}
-          D7_DATA_SOURCE_ID: ${{ secrets.D7_DATA_SOURCE_ID }}

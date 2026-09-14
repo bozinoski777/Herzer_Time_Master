@@ -1,0 +1,39 @@
+"use strict";
+
+const test = require("node:test");
+const assert = require("node:assert/strict");
+
+process.env.D1_DATA_SOURCE_ID = "test-d1";
+process.env.D7_DATA_SOURCE_ID = "test-d7";
+process.env.D8_DATA_SOURCE_ID = "test-d8";
+
+const { planD3StandortOptions } = require("../scripts/sync-standorte");
+const { workerStandortOptions } = require("../scripts/worker-standort-options");
+
+test("D3 Standort sync removes unused inactive sites and makes work choices gray", () => {
+  const plan = planD3StandortOptions(
+    [
+      { id: "berlin", name: "Berlin", color: "blue" },
+      { id: "inactive", name: "Old office", color: "blue" },
+      { id: "urlaub", name: "Urlaub", color: "blue" },
+    ],
+    workerStandortOptions(["Berlin"]),
+    [{ properties: { Standort: { select: { name: "Berlin" } } } }],
+  );
+
+  assert.deepEqual(plan.removed, ["Old office"]);
+  assert.equal(plan.changed, true);
+  assert.equal(plan.nextOptions.find((option) => option.name === "Urlaub").color, "gray");
+  assert.equal(plan.nextOptions.some((option) => option.name === "Old office"), false);
+});
+
+test("D3 Standort sync refuses to remove an option used by a current day", () => {
+  assert.throws(
+    () => planD3StandortOptions(
+      [{ id: "inactive", name: "Old office", color: "blue" }],
+      workerStandortOptions([]),
+      [{ properties: { Standort: { select: { name: "Old office" } } } }],
+    ),
+    /still uses inactive Standort option/,
+  );
+});

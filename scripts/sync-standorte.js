@@ -10,7 +10,7 @@ const {
   titleValue,
   updateDataSource,
 } = require("./notion");
-const { workerStandortNames } = require("./worker-standort-options");
+const { workerStandortNames, workerStandortOptions } = require("./worker-standort-options");
 
 const {
   D1_DATA_SOURCE_ID: D1,
@@ -61,11 +61,7 @@ async function readyWorkers() {
   }));
 }
 
-/**
- * Add missing active sites while explicitly retaining every current option.
- * Notion removes select options omitted from a schema PATCH, so preserving the
- * existing option IDs here is intentional and protects historic time entries.
- */
+/** D7 is history, so it retains every existing option and only gains new ones. */
 async function addMissingStandortOptions(dataSourceId, standorte) {
   const dataSource = await getDataSource(dataSourceId);
   const property = dataSource.properties?.Standort;
@@ -95,10 +91,79 @@ async function addMissingStandortOptions(dataSourceId, standorte) {
   return additions.length;
 }
 
+function selectedStandortNames(rows) {
+  return [...new Set(
+    rows.map((row) => row.properties.Standort?.select?.name || "").filter(Boolean),
+  )];
+}
+
+function optionForUpdate(existing, desired) {
+  return {
+    ...(existing?.id ? { id: existing.id } : {}),
+    name: desired.name,
+    color: desired.color,
+  };
+}
+
+/**
+ * D3 contains only the current month, so it may drop inactive D8 sites.
+ * A selected value is never removed: Notion would invalidate that current day.
+ */
+function planD3StandortOptions(existingOptions, desiredOptions, rows) {
+  const desiredNames = new Set(desiredOptions.map((option) => option.name));
+  const selectedInactive = selectedStandortNames(rows).filter((name) => !desiredNames.has(name));
+  if (selectedInactive.length > 0) {
+    throw new Error(
+      `D3 still uses inactive Standort option(s): ${selectedInactive.join(", ")}. ` +
+        "Change or clear those current-month entries before the option can be removed.",
+    );
+  }
+
+  const existingByName = new Map(existingOptions.map((option) => [option.name, option]));
+  const nextOptions = desiredOptions.map((desired) => optionForUpdate(existingByName.get(desired.name), desired));
+  const removed = existingOptions
+    .map((option) => option.name)
+    .filter((name) => !desiredNames.has(name));
+  const added = desiredOptions
+    .map((option) => option.name)
+    .filter((name) => !existingByName.has(name));
+  const currentPresentation = existingOptions.map((option) => ({ name: option.name, color: option.color }));
+  const nextPresentation = nextOptions.map((option) => ({ name: option.name, color: option.color }));
+
+  return {
+    added,
+    removed,
+    nextOptions,
+    changed: JSON.stringify(currentPresentation) !== JSON.stringify(nextPresentation),
+  };
+}
+
+async function syncD3StandortOptions(dataSourceId, desiredOptions) {
+  const dataSource = await getDataSource(dataSourceId);
+  const property = dataSource.properties?.Standort;
+  if (!property || property.type !== "select") {
+    throw new Error(`Data source ${dataSourceId} needs a Select property named "Standort"`);
+  }
+
+  const plan = planD3StandortOptions(
+    property.select.options || [],
+    desiredOptions,
+    await queryAll(dataSourceId),
+  );
+  if (!plan.changed) return plan;
+
+  await updateDataSource(dataSourceId, {
+    Standort: { select: { options: plan.nextOptions } },
+  });
+  return plan;
+}
+
 async function main() {
   await validateSchema();
 
-  const standorte = workerStandortNames(await getActiveStandorte());
+  const activeStandorte = await getActiveStandorte();
+  const standorte = workerStandortNames(activeStandorte);
+  const d3Options = workerStandortOptions(activeStandorte);
   const workers = await readyWorkers();
   const seenDataSources = new Set();
 
@@ -113,15 +178,19 @@ async function main() {
     }
     seenDataSources.add(worker.d3DataSourceId);
 
-    const added = await addMissingStandortOptions(worker.d3DataSourceId, standorte);
-    console.log(`${worker.name}: ${added} Standort option(s) added.`);
+    const result = await syncD3StandortOptions(worker.d3DataSourceId, d3Options);
+    console.log(`${worker.name}: ${result.added.length} added, ${result.removed.length} inactive option(s) removed.`);
   }
 
   const d7Added = await addMissingStandortOptions(D7, standorte);
   console.log(`D7: ${d7Added} Standort option(s) added.`);
 }
 
-main().catch((failure) => {
-  console.error(errorMessage(failure));
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((failure) => {
+    console.error(errorMessage(failure));
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { planD3StandortOptions };
