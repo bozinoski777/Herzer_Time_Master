@@ -2,13 +2,16 @@ name: Standort sync
 
 on:
   # This remains a distinct workflow/run in GitHub, but begins only after the
-  # matching Daily worker sync run has completed successfully.
+  # matching Daily worker sync run completes. The source job publishes a
+  # completion marker only after the actual D3→D7 sync, so a skipped DST
+  # helper run cannot perform a Standort synchronization.
   workflow_run:
     workflows: ["Daily worker sync"]
     types: [completed]
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -17,11 +20,42 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  source:
+    name: Confirm Daily Worker Sync completed
+    if: github.event_name == 'workflow_run'
+    runs-on: ubuntu-latest
+    outputs:
+      run_standort: ${{ steps.marker.outputs.run_standort }}
+    steps:
+      - id: marker
+        name: Find the completed-sync marker
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const artifacts = await github.paginate(
+              github.rest.actions.listWorkflowRunArtifacts,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: context.payload.workflow_run.id,
+                per_page: 100,
+              },
+            );
+            const completed =
+              context.payload.workflow_run.conclusion === "success" &&
+              artifacts.some(
+                (artifact) =>
+                  artifact.name === "daily-worker-sync-complete" &&
+                  !artifact.expired,
+              );
+            core.setOutput("run_standort", completed ? "true" : "false");
+
   standorte:
     name: Sync active D3 Standort options
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+      always() &&
+      (github.event_name == 'workflow_dispatch' || needs.source.outputs.run_standort == 'true')
+    needs: source
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:

@@ -1,9 +1,6 @@
 name: Onboard workers
 
 on:
-  schedule:
-    # Every UTC weekday at minute 17. Cron is UTC; see README for DST effects.
-    - cron: "17 * * * 1-5"
   workflow_dispatch:
 
 permissions:

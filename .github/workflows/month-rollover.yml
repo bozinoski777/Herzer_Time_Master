@@ -2,10 +2,12 @@ name: Archive completed month and prepare current month
 
 on:
   schedule:
-    # Every day at 03:17 UTC, including weekends. Cron is UTC: this is 04:17
-    # during CET and 05:17 during CEST; month-rollover.js uses Europe/Berlin
-    # calendar dates, so DST never changes the month decision.
-    - cron: "17 3 * * *"
+    # GitHub Actions cron is UTC. The cadence job below runs rollover at
+    # 00:15 Europe/Berlin in both CET and CEST; the other entry exits before
+    # it reads or changes Notion. It still runs daily so a missed first-of-month
+    # execution is safely caught up the next day.
+    - cron: "15 22 * * *"
+    - cron: "15 23 * * *"
   workflow_dispatch:
     inputs:
       target_worker:
@@ -32,7 +34,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  cadence:
+    name: Confirm Berlin rollover cadence
+    runs-on: ubuntu-latest
+    outputs:
+      run_rollover: ${{ steps.decide.outputs.run_rollover }}
+    steps:
+      - id: decide
+        name: Run only at 00:15 Berlin time
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule || '' }}
+        run: |
+          run_rollover=false
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            run_rollover=true
+          else
+            berlin_offset="$(TZ=Europe/Berlin date +%z)"
+            case "$berlin_offset|$SCHEDULE" in
+              "+0200|15 22 * * *"|"+0100|15 23 * * *")
+                run_rollover=true
+                ;;
+            esac
+          fi
+
+          echo "run_rollover=$run_rollover" >> "$GITHUB_OUTPUT"
+
   rollover:
+    needs: cadence
+    if: needs.cadence.outputs.run_rollover == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:

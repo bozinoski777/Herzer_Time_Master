@@ -2,8 +2,13 @@ name: Daily worker sync
 
 on:
   schedule:
-    # 06:17 and 14:17 UTC on UTC weekdays. See README for DST effects.
-    - cron: "17 6,14 * * 1-5"
+    # GitHub Actions cron is UTC. The cadence job below chooses exactly the
+    # two entries that are 07:15 and 15:15 in Europe/Berlin, in both CET and
+    # CEST. The other two scheduled runs exit before any Notion access.
+    - cron: "15 5 * * 1-5"
+    - cron: "15 6 * * 1-5"
+    - cron: "15 13 * * 1-5"
+    - cron: "15 14 * * 1-5"
   workflow_dispatch:
 
 permissions:
@@ -16,8 +21,39 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  cadence:
+    name: Confirm Berlin daily cadence
+    runs-on: ubuntu-latest
+    outputs:
+      run_sync: ${{ steps.decide.outputs.run_sync }}
+    steps:
+      - id: decide
+        name: Run only at 07:15 or 15:15 Berlin time
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule || '' }}
+        run: |
+          run_sync=false
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            run_sync=true
+          else
+            berlin_offset="$(TZ=Europe/Berlin date +%z)"
+            case "$berlin_offset|$SCHEDULE" in
+              "+0200|15 5 * * 1-5"|"+0200|15 13 * * 1-5"|\
+              "+0100|15 6 * * 1-5"|"+0100|15 14 * * 1-5")
+                run_sync=true
+                ;;
+            esac
+          fi
+
+          echo "run_sync=$run_sync" >> "$GITHUB_OUTPUT"
+
   management:
     name: Upsert worker days into management
+    needs: cadence
+    if: needs.cadence.outputs.run_sync == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -31,3 +67,11 @@ jobs:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           D1_DATA_SOURCE_ID: ${{ secrets.D1_DATA_SOURCE_ID }}
           D7_DATA_SOURCE_ID: ${{ secrets.D7_DATA_SOURCE_ID }}
+      - name: Create completed-sync marker
+        run: touch "$RUNNER_TEMP/daily-worker-sync-complete"
+      - name: Publish completed-sync marker for Standort Sync
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-worker-sync-complete
+          path: ${{ runner.temp }}/daily-worker-sync-complete
+          retention-days: 1

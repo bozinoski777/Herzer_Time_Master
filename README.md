@@ -134,13 +134,13 @@ GitHub Actions cron is always **UTC**.
 
 | Workflow | UTC cron | Intended cadence |
 | --- | --- | --- |
-| Onboard workers | `17 * * * 1-5` | Every UTC weekday at `:17` |
-| Daily sync | `17 6,14 * * 1-5` | 06:17 and 14:17 UTC on UTC weekdays |
-| Standort sync | After successful Daily sync | Separate GitHub workflow; also manual |
-| Month rollover | `17 3 * * *` | Every day at 03:17 UTC, including weekends |
+| Onboard workers | — | Manual only, when a prepared worker should be provisioned |
+| Daily sync | `15 5,6,13,14 * * 1-5` | Exactly 07:15 and 15:15 Europe/Berlin on weekdays; two UTC entries are safely skipped for DST |
+| Standort sync | After successful D3→D7 management job | Separate GitHub workflow; also manual |
+| Month rollover | `15 22,23 * * *` | Exactly 00:15 Europe/Berlin every day, including weekends; one UTC entry is safely skipped for DST |
 | Migrate legacy Tagtyp to Standort | — | Manual only; read-only unless **execute** is checked |
 
-GitHub Actions cron is **always UTC**. Germany is UTC+1 during CET and UTC+2 during CEST, so Daily sync runs occur at **07:17 / 15:17 CET** in winter and **08:17 / 16:17 CEST** in summer; each successful run then starts Standort sync. Rollover runs at **04:17 CET** in winter and **05:17 CEST** in summer. The script itself decides the month using `Europe/Berlin`, so a DST change cannot cause it to roll at the wrong calendar boundary. Use **Run workflow** in GitHub Actions for exceptional local-time or holiday runs.
+GitHub Actions cron is **always UTC**. The schedules deliberately include both possible UTC offsets, then a tiny cadence job uses `Europe/Berlin` to allow only the matching entry: Daily Worker Sync therefore runs at **07:15 and 15:15 Berlin time** throughout the year, and Month Rollover runs at **00:15 Berlin time**. A successful D3→D7 management job publishes a short-lived completion marker, which starts the separate Standort Sync workflow; a skipped daylight-saving helper run has no marker and cannot perform a Standort sync. Rollover remains daily, rather than only on the first of the month, so it catches up safely after a missed GitHub run. Use **Run workflow** in GitHub Actions for exceptional local-time or holiday runs.
 
 All Notion-mutating workflows use one shared `herzer-notion-mutations` concurrency group. GitHub queues a later run instead of allowing onboarding, daily sync, rollover, and the guarded migration to mutate the same POC records at the same time.
 
