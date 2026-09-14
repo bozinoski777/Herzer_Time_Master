@@ -555,13 +555,14 @@ async function rolloverWorker(worker, run) {
 
   // A chart is presentation only: a manually deleted/stale chart reference
   // must not block a completed archive transaction or D3 month generation.
-  if (worker.vacationChartViewId && worker.currentMonth !== run.targetMonth) {
+  if (worker.vacationChartViewId) {
     try {
-      await updateVacationChartForRollover(
+      const refreshed = await updateVacationChartForRollover(
         worker.vacationChartViewId,
         worker.d4DataSourceId,
         run.targetMonth,
       );
+      if (refreshed) console.log(`${worker.name}: Urlaub chart calendar year refreshed.`);
     } catch (chartFailure) {
       console.warn(`${worker.name}: Urlaub chart was not refreshed: ${errorMessage(chartFailure)}`);
     }

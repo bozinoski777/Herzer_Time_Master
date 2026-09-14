@@ -25,7 +25,10 @@ const CURRENT_MONTH_DATABASE_TITLE = "Aktueller Monat";
 const ARCHIVE_DATABASE_TITLE = "Archiv";
 const ARCHIVE_MONTH_PROPERTY = "Monat";
 const ARCHIVE_MONTH_FORMULA = 'formatDate(prop("Datum"), "YYYY-MM")';
-const VACATION_CHART_TITLE = "Urlaubstage bis Ende letzten Monats";
+const VACATION_CHART_TITLE = "Genommene Urlaubstage bis Ende letzten Monats";
+// Kept only for crash recovery of a worker whose provisioning started on the
+// immediately preceding template revision.
+const LEGACY_VACATION_CHART_TITLE = "Urlaubstage bis Ende letzten Monats";
 
 const DAY_SCHEMA = {
   Wochentag: "title",
@@ -49,14 +52,27 @@ function validMonth(targetMonth) {
 
 function vacationFilter(targetMonth) {
   if (!validMonth(targetMonth)) throw new Error(`Invalid month "${targetMonth}"`);
-  const year = targetMonth.slice(0, 4);
+  const year = Number(targetMonth.slice(0, 4));
   return {
     and: [
       { property: "Standort", select: { equals: "Urlaub" } },
       { property: "Datum", date: { on_or_after: `${year}-01-01` } },
-      { property: "Datum", date: { before: `${targetMonth}-01` } },
+      // An exclusive next-January boundary covers the complete calendar year,
+      // including every day in December.
+      { property: "Datum", date: { before: `${year + 1}-01-01` } },
     ],
   };
+}
+
+function vacationChartUsesCalendarYear(view, targetMonth) {
+  if (!validMonth(targetMonth)) throw new Error(`Invalid month "${targetMonth}"`);
+  const expectedRange = vacationFilter(targetMonth).and.filter((condition) => condition.property === "Datum");
+  const actualRange = (view?.filter?.and || []).filter((condition) => condition.property === "Datum");
+
+  return expectedRange.every((expected) => actualRange.some((actual) => (
+    actual.date?.on_or_after === expected.date?.on_or_after &&
+    actual.date?.before === expected.date?.before
+  )));
 }
 
 function propertyId(dataSource, propertyName) {
@@ -227,7 +243,7 @@ function isVacationChart(view, dataSourceId) {
   return (
     view?.data_source_id === dataSourceId &&
     view.type === "chart" &&
-    view.name === VACATION_CHART_TITLE
+    [VACATION_CHART_TITLE, LEGACY_VACATION_CHART_TITLE].includes(view.name)
   );
 }
 
@@ -253,7 +269,7 @@ async function recoverVacationChartFromWorkerPage(workerPageId, dataSourceId) {
 
 async function ensureVacationChart(
   workerPageId,
-  d4DatabaseId,
+  insertAfterBlockId,
   d4DataSourceId,
   targetMonth,
   knownViewId = "",
@@ -282,7 +298,7 @@ async function ensureVacationChart(
     type: "chart",
     create_database: {
       parent: { type: "page_id", page_id: workerPageId },
-      position: { type: "after_block", block_id: d4DatabaseId },
+      position: { type: "after_block", block_id: insertAfterBlockId },
     },
     ...payload,
   });
@@ -295,6 +311,7 @@ async function updateVacationChartForRollover(viewId, d4DataSourceId, targetMont
   if (!isVacationChart(view, d4DataSourceId)) {
     throw new Error(`D1 Urlaub chart view ${viewId} does not match the worker D4 data source`);
   }
+  if (vacationChartUsesCalendarYear(view, targetMonth)) return false;
   const dataSource = await getDataSource(d4DataSourceId);
   await updateView(view.id, vacationChartPayload(dataSource, targetMonth));
   return true;
@@ -346,6 +363,7 @@ module.exports = {
   ARCHIVE_MONTH_FORMULA,
   ARCHIVE_MONTH_PROPERTY,
   CURRENT_MONTH_DATABASE_TITLE,
+  LEGACY_VACATION_CHART_TITLE,
   VACATION_CHART_TITLE,
   archiveSchemaProperties,
   archiveViewPayload,
@@ -360,5 +378,6 @@ module.exports = {
   managementViewProperties,
   updateVacationChartForRollover,
   vacationChartPayload,
+  vacationChartUsesCalendarYear,
   vacationFilter,
 };

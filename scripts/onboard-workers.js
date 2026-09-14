@@ -68,7 +68,12 @@ const WEEKDAYS = [
 ];
 const WORKER_FRONTEND_ICON = { type: "emoji", emoji: "👤" };
 const VACATION_CHART_VIEW_ID_PROPERTY = "Urlaub Chart View ID";
-const MANUAL_ONBOARDING_CHECKLIST_MARKER = "Manuelle Freigabe-Checkliste";
+const MANUAL_ONBOARDING_CHECKLIST_ITEMS = [
+  "In Employee Front-ends → Customize layout → Properties: Email sichtbar lassen, Worker Key und D1 Record ID ausblenden und für alle Seiten übernehmen.",
+  "Diese Frontend-Seite an die oben angezeigte E-Mail einladen: Can view.",
+  "Aktueller Monat an dieselbe E-Mail einladen: Can edit content.",
+  "Archiv an dieselbe E-Mail einladen: Can view.",
+];
 
 const D1_SCHEMA = {
   "Vor- und Nachname": "title",
@@ -160,44 +165,42 @@ function blockText(block) {
   return (block?.[block?.type]?.rich_text || []).map((item) => item.plain_text || "").join("");
 }
 
-function manualOnboardingChecklistBlock() {
-  return {
+function manualOnboardingChecklistBlocks() {
+  return MANUAL_ONBOARDING_CHECKLIST_ITEMS.map((content) => ({
     object: "block",
-    type: "callout",
-    callout: {
-      icon: { type: "emoji", emoji: "📌" },
-      rich_text: [{
-        type: "text",
-        text: {
-          content:
-            `${MANUAL_ONBOARDING_CHECKLIST_MARKER} — nach Abschluss diesen Hinweis löschen.\n` +
-            "1. In Employee Front-ends → Customize layout → Properties: Email sichtbar lassen, Worker Key und D1 Record ID ausblenden und für alle Seiten übernehmen.\n" +
-            "2. Diese Frontend-Seite an die oben angezeigte E-Mail einladen: Can view.\n" +
-            "3. Aktueller Monat an dieselbe E-Mail einladen: Can edit content.\n" +
-            "4. Archiv an dieselbe E-Mail einladen: Can view.",
-        },
-      }],
+    type: "to_do",
+    to_do: {
+      rich_text: [{ type: "text", text: { content } }],
+      checked: false,
     },
-  };
+  }));
 }
 
 async function ensureManualOnboardingChecklist(pageId) {
-  const matches = (await listAllBlockChildren(pageId)).filter(
-    (block) => block.type === "callout" && blockText(block).includes(MANUAL_ONBOARDING_CHECKLIST_MARKER),
-  );
-  if (matches.length > 1) {
-    throw new Error(`Worker page ${pageId} has multiple manual onboarding checklists; refusing to create another.`);
-  }
-  if (matches.length === 1) return matches[0].id;
+  let blocks = await listAllBlockChildren(pageId);
+  const idsForItem = (item) => blocks
+    .filter((block) => block.type === "to_do" && blockText(block) === item)
+    .map((block) => block.id);
 
-  await appendBlockChildren(pageId, [manualOnboardingChecklistBlock()]);
-  const refreshed = (await listAllBlockChildren(pageId)).filter(
-    (block) => block.type === "callout" && blockText(block).includes(MANUAL_ONBOARDING_CHECKLIST_MARKER),
-  );
-  if (refreshed.length !== 1) {
-    throw new Error(`Could not recover the manual onboarding checklist on worker page ${pageId}`);
+  for (const item of MANUAL_ONBOARDING_CHECKLIST_ITEMS) {
+    if (idsForItem(item).length > 1) {
+      throw new Error(`Worker page ${pageId} has a duplicate onboarding checklist item; refusing to create another.`);
+    }
   }
-  return refreshed[0].id;
+
+  const missingItems = MANUAL_ONBOARDING_CHECKLIST_ITEMS.filter((item) => idsForItem(item).length === 0);
+  if (missingItems.length > 0) {
+    await appendBlockChildren(pageId, manualOnboardingChecklistBlocks().filter(
+      (block) => missingItems.includes(block.to_do.rich_text[0].text.content),
+    ));
+    blocks = await listAllBlockChildren(pageId);
+  }
+
+  const checklistIds = MANUAL_ONBOARDING_CHECKLIST_ITEMS.flatMap(idsForItem);
+  if (checklistIds.length !== MANUAL_ONBOARDING_CHECKLIST_ITEMS.length) {
+    throw new Error(`Could not recover every onboarding checklist item on worker page ${pageId}`);
+  }
+  return checklistIds;
 }
 
 async function findExactChild(parentPageId, blockType, names) {
@@ -539,7 +542,7 @@ async function provisionWorker(row) {
     await ensureArchivePresentation(d4.databaseId, d4.dataSourceId);
     const vacationChartViewId = await ensureVacationChart(
       workerPage.id,
-      d4.databaseId,
+      d3.databaseId,
       d4.dataSourceId,
       berlinCurrentMonthKey(),
       d1Value(row, VACATION_CHART_VIEW_ID_PROPERTY),
@@ -622,5 +625,5 @@ module.exports = {
   currentMonthDates,
   dayDatabaseProperties,
   frontendProperties,
-  manualOnboardingChecklistBlock,
+  manualOnboardingChecklistBlocks,
 };

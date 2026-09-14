@@ -11,6 +11,7 @@ const {
   currentMonthViewPayload,
   managementViewProperties,
   vacationChartPayload,
+  vacationChartUsesCalendarYear,
   vacationFilter,
 } = require("../scripts/frontend-presentation");
 
@@ -66,18 +67,20 @@ test("D4 groups by formula month, sorts newest first, and hides technical fields
   );
 });
 
-test("vacation number chart counts Urlaub rows through the prior completed month", () => {
+test("vacation number chart counts Urlaub rows in the current calendar year", () => {
   assert.deepEqual(vacationFilter("2027-01"), {
     and: [
       { property: "Standort", select: { equals: "Urlaub" } },
       { property: "Datum", date: { on_or_after: "2027-01-01" } },
-      { property: "Datum", date: { before: "2027-01-01" } },
+      { property: "Datum", date: { before: "2028-01-01" } },
     ],
   });
   assert.deepEqual(vacationFilter("2027-10").and.at(-1), {
     property: "Datum",
-    date: { before: "2027-10-01" },
+    date: { before: "2028-01-01" },
   });
+  assert.equal(vacationChartUsesCalendarYear({ filter: vacationFilter("2027-10") }, "2027-01"), true);
+  assert.equal(vacationChartUsesCalendarYear({ filter: vacationFilter("2026-10") }, "2027-01"), false);
 
   const payload = vacationChartPayload(dataSource(), "2027-10");
   assert.equal(payload.name, VACATION_CHART_TITLE);

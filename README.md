@@ -10,10 +10,10 @@ This repository automates only the **Herzer 2.0 → Secure Timekeeping POC**. It
 Employee Front-ends (management only)
 └── Worker name (the page shared with that one worker)
     ├── visible properties: Vor- und Nachname, Email
-    ├── 📌 Manuelle Freigabe-Checkliste (delete after completion)
+    ├── four manual invite/layout checklist items
     ├── Aktueller Monat — inline, current-month table
-    ├── Archiv — inline archive table
-    └── Urlaubstage bis Ende letzten Monats — linked D4 number chart
+    ├── Genommene Urlaubstage bis Ende letzten Monats — linked D4 number chart
+    └── Archiv — inline archive table
 ```
 
 The automation prepares pages and records invite readiness. It intentionally does **not** call a browser, invite guests, or change Notion sharing permissions: those actions are not part of the public Notion API and must remain a deliberate management step.
@@ -24,9 +24,9 @@ For every future worker, onboarding sets the database and data-source titles exa
 
 - **Aktueller Monat:** only `Wochentag`, `Datum`, `Standort`, and `Stunden`; sorted by `Datum` ascending, with no date filter.
 - **Archiv:** sorted by `Datum` descending; grouped newest-first by derived formula `Monat = formatDate(prop("Datum"), "YYYY-MM")`; `Sync Key` and the technical `Monat` property are hidden from its worker-facing table view. The formula calculates for every archive row automatically, including rows created by later rollovers.
-- **Urlaubstage bis Ende letzten Monats:** a small linked D4 number chart on the worker page. It counts `Standort = Urlaub` from January 1 of the current Berlin calendar year through the end of the prior month. It uses the existing D4 data source, creates no extra time-entry store, and rollover refreshes its month boundary.
+- **Genommene Urlaubstage bis Ende letzten Monats:** a small linked D4 number chart on the worker page, placed between D3 and D4. Its filter covers January 1 through December 31 of the current Berlin calendar year. Because D4 contains only completed months, the displayed count is through the end of the prior month. It uses the existing D4 data source, creates no extra time-entry store, and rollover only updates the filter when the calendar year changes.
 
-The internal Employee Front-ends properties **`Worker Key`** and **`D1 Record ID`** remain intact for safe recovery and routing; **`Email`** is a visible worker-facing property. Onboarding hides the two internal columns in the identifiable default **management table view**, but Notion's public API does not offer an endpoint for the properties shown on an opened row page. For every future worker page, onboarding adds a removable **Manuelle Freigabe-Checkliste** callout that tells the onboarder to make this one-time workspace setting in **Employee Front-ends → Customize layout → Properties**: show `Email`, hide `Worker Key` and `D1 Record ID`, and apply the layout to every page in the database. The same callout lists the three required manual access grants: frontend page **Can view**, D3 **Can edit content**, and D4 **Can view**. Delete the callout after those four checks are complete.
+The internal Employee Front-ends properties **`Worker Key`** and **`D1 Record ID`** remain intact for safe recovery and routing; **`Email`** is a visible worker-facing property. Onboarding hides the two internal columns in the identifiable default **management table view**, but Notion's public API does not offer an endpoint for the properties shown on an opened row page. Every future worker page gets four unchecked Notion checklist items: make the one-time **Employee Front-ends → Customize layout → Properties** setting (show `Email`, hide `Worker Key` and `D1 Record ID`), then grant frontend page **Can view**, D3 **Can edit content**, and D4 **Can view**. The onboarder can check the items when completed.
 
 After onboarding is `Ready` and `Sharing Status` is `Ready for Invite`:
 
@@ -39,7 +39,7 @@ Never give a worker access to D1, D7, D8, Control & Automation, Management, the 
 
 ## What runs
 
-- **Onboarding** finds `Active = true` D1 records whose `Onboarding Status` is `Pending` or `Provisioning`. It records `Provisioning`, generates a Worker Key if needed, creates or recovers exactly one worker page in `Employee Front-ends`, adds the removable manual-invite checklist and visible email property, prepares D3 (`Aktueller Monat`) then D4 (`Archiv`), creates one linked D4 vacation number chart, configures the existing default views, fills missing current-month D3 days, adds active D8 Standort options and the work choices to D3 and D4, writes IDs immediately to D1, sets `Sharing Status = Ready for Invite`, then sets `Onboarding Status = Ready`.
+- **Onboarding** finds `Active = true` D1 records whose `Onboarding Status` is `Pending` or `Provisioning`. It records `Provisioning`, generates a Worker Key if needed, creates or recovers exactly one worker page in `Employee Front-ends`, adds the four-item manual checklist and visible email property, prepares D3 (`Aktueller Monat`) then D4 (`Archiv`), inserts one linked D4 vacation number chart between them, configures the existing default views, fills missing current-month D3 days, adds active D8 Standort options and the work choices to D3 and D4, writes IDs immediately to D1, sets `Sharing Status = Ready for Invite`, then sets `Onboarding Status = Ready`.
 - **Standort sync** preserves the existing D8 → D3/D7 behavior: active D8 `Standort` values and the work choices are added (never removed) to every active, ready worker D3 and D7.
 - **Management sync** preserves the existing D3 → D7 behavior: `Worker Key|Datum` is the D7 `Sync Key`, so each source day is created once or updated idempotently. Blank values are also written, so D7 reflects a worker's corrections instead of retaining stale data.
 - **Month rollover** runs every day, including weekends. It uses the `Europe/Berlin` calendar month, not “the first of the month,” so a missed run catches up safely. It archives every completed D3 month for workers with valid D3/D4 references (including inactive workers), verifies the worker’s D4 archive before soft-archiving any D3 source rows, and creates the current month only for `Active = true` workers.

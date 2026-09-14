@@ -16,7 +16,7 @@ process.env.EMPLOYEE_FRONTENDS_DATA_SOURCE_ID = "test-frontends";
 const {
   dayDatabaseProperties,
   frontendProperties,
-  manualOnboardingChecklistBlock,
+  manualOnboardingChecklistBlocks,
 } = require("../scripts/onboard-workers");
 
 test("Standort combines active sites and the former day-type choices once", () => {
@@ -55,11 +55,13 @@ test("new worker frontends expose email and include the manual invite checklist"
   assert.deepEqual(properties.Email, { email: "tea@example.com" });
   assert.equal(properties["Worker Key"].rich_text[0].text.content, "wrk_1");
 
-  const checklist = manualOnboardingChecklistBlock();
-  assert.equal(checklist.type, "callout");
-  const text = checklist.callout.rich_text[0].text.content;
+  const checklist = manualOnboardingChecklistBlocks();
+  assert.equal(checklist.length, 4);
+  assert.ok(checklist.every((block) => block.type === "to_do" && block.to_do.checked === false));
+  const text = checklist.map((block) => block.to_do.rich_text[0].text.content).join("\n");
   assert.match(text, /Customize layout/);
   assert.match(text, /Email sichtbar lassen/);
   assert.match(text, /Can view/);
   assert.match(text, /Can edit content/);
+  assert.doesNotMatch(text, /Manuelle Freigabe-Checkliste/);
 });
