@@ -67,14 +67,17 @@ test("new worker frontends expose email and include the manual invite checklist"
   assert.equal(properties["Worker Key"].rich_text[0].text.content, "wrk_1");
 
   const checklist = manualOnboardingChecklistBlocks();
-  assert.equal(checklist.length, 3);
+  assert.equal(checklist.length, 6);
   assert.ok(checklist.every((block) => block.type === "to_do" && block.to_do.checked === false));
   const text = checklist.map((block) => block.to_do.rich_text.map((item) => item.text.content).join("")).join("\n");
   assert.match(text, /Can view/);
   assert.match(text, /Can edit content/);
   assert.doesNotMatch(text, /Manuelle Freigabe-Checkliste/);
   assert.doesNotMatch(text, /Customize layout/);
-  assert.ok(checklist.every((block) => block.to_do.rich_text.some(
+  assert.match(text, /DB-Titel ausblenden und Urlaub-Chart benennen/);
+  assert.match(text, /Archiv sperren/);
+  assert.match(text, /Vorlage Teil-Tag/);
+  assert.ok(checklist.slice(0, 3).every((block) => block.to_do.rich_text.some(
     (item) => item.annotations?.bold === true && /^Can (view|edit content)$/.test(item.text.content),
   )));
 });

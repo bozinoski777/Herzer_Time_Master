@@ -10,7 +10,7 @@ This repository automates only the **Herzer 2.0 → Secure Timekeeping POC**. It
 Employee Front-ends (management only)
 └── Worker name (the page shared with that one worker)
     ├── visible properties: Vor- und Nachname, Email
-    ├── three manual invite checklist items
+    ├── six manual setup checklist items
     ├── Aktueller Monat — inline, current-month table
     ├── ─── page divider ───
     ├── Genommene Urlaubstage bis Ende letzten Monats — linked D4 number chart
@@ -29,7 +29,9 @@ For every future worker, onboarding sets the database and data-source titles exa
 
 Notion's public API can show or hide the generated number-chart label, but cannot set that label's text (for example, replacing `Count all`) or hide the linked database view name. Those two display options require a manual Notion UI adjustment if desired.
 
-The internal Employee Front-ends properties **`Worker Key`** and **`D1 Record ID`** remain intact for safe recovery and routing; **`Email`** is a visible worker-facing property. Onboarding hides the two internal columns in the identifiable default **management table view**, but Notion's public API does not offer an endpoint for the properties shown on an opened row page. Every future worker page gets three unchecked Notion checklist items for frontend page **Can view**, D3 **Can edit content**, and D4 **Can view**. The permission words are bold so the required access is easy to scan.
+The API can lock an individual page, but it does not expose a lock field on a database container such as D4 Archiv. It can apply an existing data-source template to a new page, but has no endpoint to create or manage the `Teil-Tag` template itself. Both are therefore explicit manual checklist steps rather than automated changes.
+
+The internal Employee Front-ends properties **`Worker Key`** and **`D1 Record ID`** remain intact for safe recovery and routing; **`Email`** is a visible worker-facing property. Onboarding hides the two internal columns in the identifiable default **management table view**, but Notion's public API does not offer an endpoint for the properties shown on an opened row page. Every future worker page gets six unchecked Notion checklist items: frontend page **Can view**, D3 **Can edit content**, D4 **Can view**, hide the Archiv DB title/name the Urlaub chart, lock Archiv, and create the D3 `Teil-Tag` template with its date set to the current date. The permission words are bold so the required access is easy to scan.
 
 After onboarding is `Ready` and `Sharing Status` is `Ready for Invite`:
 
@@ -42,7 +44,7 @@ Never give a worker access to D1, D7, D8, Control & Automation, Management, the 
 
 ## What runs
 
-- **Onboarding** appears in GitHub as two connected stages: **1 · Validate POC setup** validates the Notion schemas and management layout without provisioning workers; **2 · Worker page, D3, Urlaub KPI & Archiv** then finds `Active = true` D1 records whose `Onboarding Status` is `Pending` or `Provisioning`. It records `Provisioning`, generates a Worker Key if needed, creates or recovers exactly one worker page in `Employee Front-ends`, adds the three-item manual checklist and visible email property, prepares D3 (`Aktueller Monat`) then D4 (`Archiv`), inserts one linked D4 vacation number chart after an idempotently recovered page divider, configures the existing default views, fills missing current-month D3 days, adds active D8 Standort options and the work choices to D3 and D4, writes IDs immediately to D1, sets `Sharing Status = Ready for Invite`, then sets `Onboarding Status = Ready`.
+- **Onboarding** appears in GitHub as two connected stages: **1 · Validate POC setup** validates the Notion schemas and management layout without provisioning workers; **2 · Worker page, D3, Urlaub KPI & Archiv** then finds `Active = true` D1 records whose `Onboarding Status` is `Pending` or `Provisioning`. It records `Provisioning`, generates a Worker Key if needed, creates or recovers exactly one worker page in `Employee Front-ends`, adds the six-item manual checklist and visible email property, prepares D3 (`Aktueller Monat`) then D4 (`Archiv`), inserts one linked D4 vacation number chart after an idempotently recovered page divider, configures the existing default views, fills missing current-month D3 days, adds active D8 Standort options and the work choices to D3 and D4, writes IDs immediately to D1, sets `Sharing Status = Ready for Invite`, then sets `Onboarding Status = Ready`.
 - **Standort sync** preserves the existing D8 → D3/D7 behavior: active D8 `Standort` values and the work choices are added (never removed) to every active, ready worker D3 and D7.
 - **Management sync** preserves the existing D3 → D7 behavior: `Worker Key|Datum` is the D7 `Sync Key`, so each source day is created once or updated idempotently. Blank values are also written, so D7 reflects a worker's corrections instead of retaining stale data.
 - **Month rollover** runs every day, including weekends. It uses the `Europe/Berlin` calendar month, not “the first of the month,” so a missed run catches up safely. It archives every completed D3 month for workers with valid D3/D4 references (including inactive workers), verifies the worker’s D4 archive before soft-archiving any D3 source rows, and creates the current month only for `Active = true` workers.

@@ -82,6 +82,15 @@ const MANUAL_ONBOARDING_CHECKLIST_ITEMS = [
     text: "Archiv an dieselbe E-Mail einladen: Can view.",
     permission: "Can view",
   },
+  {
+    text: "Archiv: DB-Titel ausblenden und Urlaub-Chart benennen.",
+  },
+  {
+    text: "Archiv sperren.",
+  },
+  {
+    text: "In Aktueller Monat die Vorlage Teil-Tag anlegen und Datum auf das aktuelle Datum setzen.",
+  },
 ];
 
 const D1_SCHEMA = {
@@ -177,6 +186,7 @@ function blockText(block) {
 }
 
 function checklistRichText({ text, permission }) {
+  if (!permission) return [{ type: "text", text: { content: text } }];
   const permissionStart = text.lastIndexOf(permission);
   return [
     { type: "text", text: { content: text.slice(0, permissionStart) } },
