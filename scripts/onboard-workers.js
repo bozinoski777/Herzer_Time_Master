@@ -180,6 +180,11 @@ function annualVacationValue(row) {
   return value;
 }
 
+function hasAnnualVacationValue(row) {
+  const value = row.properties[ANNUAL_VACATION_PROPERTY]?.number;
+  return value !== null && value !== undefined;
+}
+
 function frontendUrl(page) {
   return page.url || `https://www.notion.so/${page.id.replaceAll("-", "")}`;
 }
@@ -699,9 +704,20 @@ async function main() {
     ],
   });
 
-  console.log(`Found ${candidates.length} worker(s) to provision.`);
+  const waitingForAnnualVacation = candidates.filter((candidate) => !hasAnnualVacationValue(candidate));
+  const workersToProvision = candidates.filter(hasAnnualVacationValue);
+  console.log(`Found ${candidates.length} worker(s) awaiting provisioning.`);
+  if (waitingForAnnualVacation.length > 0) {
+    const names = waitingForAnnualVacation
+      .map((candidate) => titleValue(candidate.properties["Vor- und Nachname"]).trim() || candidate.id)
+      .join(", ");
+    console.log(
+      `Waiting for manually entered ${ANNUAL_VACATION_PROPERTY} in D1 before provisioning: ${names}.`,
+    );
+  }
+  console.log(`Provisioning ${workersToProvision.length} worker(s).`);
   const failures = [];
-  for (const candidate of candidates) {
+  for (const candidate of workersToProvision) {
     try {
       await provisionWorker(candidate);
     } catch (failure) {
@@ -728,5 +744,6 @@ module.exports = {
   dayDatabaseProperties,
   executionMode,
   frontendProperties,
+  hasAnnualVacationValue,
   manualOnboardingChecklistBlocks,
 };

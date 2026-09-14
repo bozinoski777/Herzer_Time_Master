@@ -18,6 +18,7 @@ const {
   dayDatabaseProperties,
   executionMode,
   frontendProperties,
+  hasAnnualVacationValue,
   manualOnboardingChecklistBlocks,
 } = require("../scripts/onboard-workers");
 
@@ -65,6 +66,14 @@ test("annual vacation must be entered manually as a non-negative number before o
   assert.throws(
     () => annualVacationValue({ id: "worker-4", properties: { Jahresurlaub: { number: -1 } } }),
     /invalid Jahresurlaub/,
+  );
+  assert.equal(
+    hasAnnualVacationValue({ id: "worker-5", properties: { Jahresurlaub: { number: 0 } } }),
+    true,
+  );
+  assert.equal(
+    hasAnnualVacationValue({ id: "worker-6", properties: { Jahresurlaub: { number: null } } }),
+    false,
   );
 });
 
