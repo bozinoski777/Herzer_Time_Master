@@ -27,5 +27,5 @@ test("legacy Tagtyp migration moves only blank Standort rows and detects conflic
   assert.deepEqual(plan.moves, [{ rowId: "move", value: "Urlaub" }]);
   assert.deepEqual(plan.conflicts, [{ rowId: "conflict", standort: "Berlin", legacy: "Urlaub" }]);
   assert.ok(plan.options.some((option) => option.name === "Urlaub"));
-  assert.ok(plan.options.some((option) => option.name === "Arbeit"));
+  assert.ok(plan.options.some((option) => option.name === "Teil-Tag"));
 });

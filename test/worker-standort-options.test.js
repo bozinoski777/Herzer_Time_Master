@@ -23,17 +23,18 @@ const {
 test("Standort combines active sites and the former day-type choices once", () => {
   assert.deepEqual(workerStandortNames(["Berlin", "Urlaub", "Berlin"]), [
     "Berlin",
+    "Teil-Tag",
     "Urlaub",
-    "Arbeit",
-    "Krank",
-    "Feiertag",
     "Sonderurlaub",
     "Überstundenausgleich",
+    "Feiertag",
+    "Krank",
   ]);
 
   const options = workerStandortOptions(["Berlin"]);
   assert.deepEqual(options.find((option) => option.name === "Berlin"), { name: "Berlin", color: "blue" });
-  assert.deepEqual(options.find((option) => option.name === "Krank"), { name: "Krank", color: "red" });
+  assert.deepEqual(options.find((option) => option.name === "Teil-Tag"), { name: "Teil-Tag", color: "gray" });
+  assert.ok(WORK_TYPE_OPTIONS.every((option) => option.color === "gray"));
   assert.equal(options.length, WORK_TYPE_OPTIONS.length + 1);
 });
 
@@ -77,7 +78,11 @@ test("new worker frontends expose email and include the manual invite checklist"
   assert.match(text, /DB-Titel ausblenden und Urlaub-Chart benennen/);
   assert.match(text, /Archiv sperren/);
   assert.match(text, /Vorlage Teil-Tag/);
-  assert.ok(checklist.slice(0, 3).every((block) => block.to_do.rich_text.some(
+  assert.match(checklist[0].to_do.rich_text[0].text.content, /Vorlage Teil-Tag/);
+  assert.match(checklist[1].to_do.rich_text[0].text.content, /Archiv sperren/);
+  assert.match(checklist[2].to_do.rich_text[0].text.content, /DB-Titel ausblenden/);
+  assert.match(checklist[5].to_do.rich_text.map((item) => item.text.content).join(""), /Diese Frontend-Seite/);
+  assert.ok(checklist.slice(-3).every((block) => block.to_do.rich_text.some(
     (item) => item.annotations?.bold === true && /^Can (view|edit content)$/.test(item.text.content),
   )));
 });

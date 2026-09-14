@@ -71,7 +71,16 @@ const WORKER_FRONTEND_ICON = { type: "emoji", emoji: "👤" };
 const VACATION_CHART_VIEW_ID_PROPERTY = "Urlaub Chart View ID";
 const MANUAL_ONBOARDING_CHECKLIST_ITEMS = [
   {
-    text: "Diese Frontend-Seite an die oben angezeigte E-Mail einladen: Can view.",
+    text: "In Aktueller Monat die Vorlage Teil-Tag anlegen und Datum auf das aktuelle Datum setzen.",
+  },
+  {
+    text: "Archiv sperren.",
+  },
+  {
+    text: "Archiv: DB-Titel ausblenden und Urlaub-Chart benennen.",
+  },
+  {
+    text: "Archiv an dieselbe E-Mail einladen: Can view.",
     permission: "Can view",
   },
   {
@@ -79,17 +88,8 @@ const MANUAL_ONBOARDING_CHECKLIST_ITEMS = [
     permission: "Can edit content",
   },
   {
-    text: "Archiv an dieselbe E-Mail einladen: Can view.",
+    text: "Diese Frontend-Seite an die oben angezeigte E-Mail einladen: Can view.",
     permission: "Can view",
-  },
-  {
-    text: "Archiv: DB-Titel ausblenden und Urlaub-Chart benennen.",
-  },
-  {
-    text: "Archiv sperren.",
-  },
-  {
-    text: "In Aktueller Monat die Vorlage Teil-Tag anlegen und Datum auf das aktuelle Datum setzen.",
   },
 ];
 

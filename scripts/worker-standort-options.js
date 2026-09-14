@@ -6,12 +6,12 @@
  * asking workers to edit two selects for the same day.
  */
 const WORK_TYPE_OPTIONS = [
-  { name: "Arbeit", color: "green" },
-  { name: "Urlaub", color: "blue" },
-  { name: "Krank", color: "red" },
-  { name: "Feiertag", color: "purple" },
-  { name: "Sonderurlaub", color: "orange" },
-  { name: "Überstundenausgleich", color: "yellow" },
+  { name: "Teil-Tag", color: "gray" },
+  { name: "Urlaub", color: "gray" },
+  { name: "Sonderurlaub", color: "gray" },
+  { name: "Überstundenausgleich", color: "gray" },
+  { name: "Feiertag", color: "gray" },
+  { name: "Krank", color: "gray" },
 ];
 
 function uniqueNames(values) {
@@ -19,7 +19,9 @@ function uniqueNames(values) {
 }
 
 function workerStandortNames(standorte) {
-  return uniqueNames([...standorte, ...WORK_TYPE_OPTIONS.map((option) => option.name)]);
+  const workTypeNames = WORK_TYPE_OPTIONS.map((option) => option.name);
+  const locations = uniqueNames(standorte).filter((name) => !workTypeNames.includes(name));
+  return [...locations, ...workTypeNames];
 }
 
 function workerStandortOptions(standorte) {
