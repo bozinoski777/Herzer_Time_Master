@@ -345,7 +345,6 @@ async function ensureD1RolloverSchema() {
     if (!seen) properties.push({ property_id: manifestPropertyId, visible: false });
     await updateView(view.id, {
       configuration: {
-        ...(view.configuration || {}),
         type: "table",
         properties,
       },

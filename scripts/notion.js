@@ -324,10 +324,24 @@ function getView(viewId) {
   return notion(`/views/${viewId}`);
 }
 
+function writableViewUpdate(attributes) {
+  if (!attributes?.configuration) return attributes;
+  const configuration = { ...attributes.configuration };
+  // Retrieve View may return -1 as Notion's internal "nothing frozen"
+  // sentinel, while Update View accepts only an integer >= 0 or omission.
+  // Never echo that read-only response representation into a PATCH.
+  if (configuration.frozen_column_index < 0) {
+    delete configuration.frozen_column_index;
+  }
+  // Table row data is returned for display but is not writable view config.
+  delete configuration.rows;
+  return { ...attributes, configuration };
+}
+
 function updateView(viewId, attributes) {
   return notion(`/views/${viewId}`, {
     method: "PATCH",
-    body: attributes,
+    body: writableViewUpdate(attributes),
   });
 }
 
@@ -397,4 +411,5 @@ module.exports = {
   updateDatabase,
   updatePage,
   updateView,
+  writableViewUpdate,
 };

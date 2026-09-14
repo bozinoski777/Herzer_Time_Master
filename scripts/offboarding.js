@@ -198,7 +198,6 @@ async function ensureD1OffboardingView(dataSourceId) {
   for (const view of tableViews) {
     await updateView(view.id, {
       configuration: {
-        ...(view.configuration || {}),
         type: "table",
         properties: offboardingViewProperties(dataSource, view.configuration || {}),
       },

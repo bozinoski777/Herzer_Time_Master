@@ -381,7 +381,6 @@ async function hideInternalFrontendColumnsInManagementView(dataSourceId) {
   const view = await defaultTableView(databaseId, dataSourceId);
   await updateView(view.id, {
     configuration: {
-      ...(view.configuration || {}),
       type: "table",
       properties: managementViewProperties(dataSource, view.configuration || {}),
     },
