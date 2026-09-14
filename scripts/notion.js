@@ -239,6 +239,13 @@ function createPage(parent, properties, extra = {}) {
   });
 }
 
+function createView(attributes) {
+  return notion("/views", {
+    method: "POST",
+    body: attributes,
+  });
+}
+
 /**
  * Move one regular page without copying its content. This is used by the
  * onboarding migration path to turn a legacy worker page into a row in the
@@ -355,6 +362,7 @@ module.exports = {
   archivePage,
   assertPropertyTypes,
   createPage,
+  createView,
   dataSourceIdFromDatabase,
   databaseIdFromDataSource,
   date,

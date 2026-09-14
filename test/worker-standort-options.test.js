@@ -13,7 +13,11 @@ process.env.D1_DATA_SOURCE_ID = "test-d1";
 process.env.D8_DATA_SOURCE_ID = "test-d8";
 process.env.EMPLOYEE_FRONTENDS_DATA_SOURCE_ID = "test-frontends";
 
-const { dayDatabaseProperties } = require("../scripts/onboard-workers");
+const {
+  dayDatabaseProperties,
+  frontendProperties,
+  manualOnboardingChecklistBlock,
+} = require("../scripts/onboard-workers");
 
 test("Standort combines active sites and the former day-type choices once", () => {
   assert.deepEqual(workerStandortNames(["Berlin", "Urlaub", "Berlin"]), [
@@ -44,4 +48,18 @@ test("new worker D3/D4 schemas use one Standort select and no Tagtyp property", 
   );
   assert.ok(d4["Sync Key"]);
   assert.ok(d4.Monat);
+});
+
+test("new worker frontends expose email and include the manual invite checklist", () => {
+  const properties = frontendProperties("Tea Smea", "tea@example.com", "wrk_1", "d1_1");
+  assert.deepEqual(properties.Email, { email: "tea@example.com" });
+  assert.equal(properties["Worker Key"].rich_text[0].text.content, "wrk_1");
+
+  const checklist = manualOnboardingChecklistBlock();
+  assert.equal(checklist.type, "callout");
+  const text = checklist.callout.rich_text[0].text.content;
+  assert.match(text, /Customize layout/);
+  assert.match(text, /Email sichtbar lassen/);
+  assert.match(text, /Can view/);
+  assert.match(text, /Can edit content/);
 });

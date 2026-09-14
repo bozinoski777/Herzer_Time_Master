@@ -35,6 +35,7 @@ const {
 } = requireEnv("D1_DATA_SOURCE_ID", "D8_DATA_SOURCE_ID");
 
 const { workerStandortNames } = require("./worker-standort-options");
+const { updateVacationChartForRollover } = require("./frontend-presentation");
 
 const BERLIN_TIME_ZONE = "Europe/Berlin";
 const WEEKDAYS = [
@@ -208,6 +209,7 @@ function workerFromRow(row) {
     active: Boolean(row.properties.Active?.checkbox),
     d3DataSourceId: rowText(row, "D3 Data Source ID"),
     d4DataSourceId: rowText(row, "D4 Data Source ID"),
+    vacationChartViewId: rowText(row, "Urlaub Chart View ID"),
     rolloverStatus: row.properties["Rollover Status"]?.select?.name || "",
     currentMonth: rowText(row, "Current Month"),
   };
@@ -550,6 +552,20 @@ async function rolloverWorker(worker, run) {
     ? await ensureCurrentMonthRows(worker, run.targetMonth, remaining.map((entry) => entry.row))
     : 0;
   const changed = oldMonths.length > 0 || created > 0;
+
+  // A chart is presentation only: a manually deleted/stale chart reference
+  // must not block a completed archive transaction or D3 month generation.
+  if (worker.vacationChartViewId && worker.currentMonth !== run.targetMonth) {
+    try {
+      await updateVacationChartForRollover(
+        worker.vacationChartViewId,
+        worker.d4DataSourceId,
+        run.targetMonth,
+      );
+    } catch (chartFailure) {
+      console.warn(`${worker.name}: Urlaub chart was not refreshed: ${errorMessage(chartFailure)}`);
+    }
+  }
 
   await setWorkerState(worker, {
     "Current Month": richText(run.targetMonth),

@@ -3,6 +3,7 @@
 const crypto = require("node:crypto");
 
 const {
+  appendBlockChildren,
   assertPropertyTypes,
   createPage,
   dataSourceIdFromDatabase,
@@ -32,6 +33,7 @@ const {
   archiveSchemaProperties,
   ensureArchivePresentation,
   ensureCurrentMonthPresentation,
+  ensureVacationChart,
   hideInternalFrontendColumnsInManagementView,
 } = require("./frontend-presentation");
 const { workerStandortNames, workerStandortOptions } = require("./worker-standort-options");
@@ -65,6 +67,8 @@ const WEEKDAYS = [
   "Samstag",
 ];
 const WORKER_FRONTEND_ICON = { type: "emoji", emoji: "👤" };
+const VACATION_CHART_VIEW_ID_PROPERTY = "Urlaub Chart View ID";
+const MANUAL_ONBOARDING_CHECKLIST_MARKER = "Manuelle Freigabe-Checkliste";
 
 const D1_SCHEMA = {
   "Vor- und Nachname": "title",
@@ -85,11 +89,12 @@ const D1_SCHEMA = {
   "D4 Data Source ID": "rich_text",
 };
 
-const FRONTENDS_SCHEMA = {
+const FRONTENDS_CORE_SCHEMA = {
   "Vor- und Nachname": "title",
   "Worker Key": "rich_text",
   "D1 Record ID": "rich_text",
 };
+const FRONTENDS_SCHEMA = { ...FRONTENDS_CORE_SCHEMA, Email: "email" };
 
 let employeeFrontendsDataSourceId;
 let legacyPocPageId;
@@ -130,12 +135,69 @@ function d1Value(row, propertyName) {
   return richTextValue(row.properties[propertyName]).trim();
 }
 
+function emailValue(row) {
+  return row.properties.Email?.email?.trim() || "";
+}
+
 function frontendUrl(page) {
   return page.url || `https://www.notion.so/${page.id.replaceAll("-", "")}`;
 }
 
 async function updateD1(rowId, properties) {
   return updatePage(rowId, properties);
+}
+
+function frontendProperties(name, email, key, d1RecordId) {
+  return {
+    "Vor- und Nachname": title(name),
+    Email: { email: email || null },
+    "Worker Key": richText(key),
+    "D1 Record ID": richText(d1RecordId),
+  };
+}
+
+function blockText(block) {
+  return (block?.[block?.type]?.rich_text || []).map((item) => item.plain_text || "").join("");
+}
+
+function manualOnboardingChecklistBlock() {
+  return {
+    object: "block",
+    type: "callout",
+    callout: {
+      icon: { type: "emoji", emoji: "📌" },
+      rich_text: [{
+        type: "text",
+        text: {
+          content:
+            `${MANUAL_ONBOARDING_CHECKLIST_MARKER} — nach Abschluss diesen Hinweis löschen.\n` +
+            "1. In Employee Front-ends → Customize layout → Properties: Email sichtbar lassen, Worker Key und D1 Record ID ausblenden und für alle Seiten übernehmen.\n" +
+            "2. Diese Frontend-Seite an die oben angezeigte E-Mail einladen: Can view.\n" +
+            "3. Aktueller Monat an dieselbe E-Mail einladen: Can edit content.\n" +
+            "4. Archiv an dieselbe E-Mail einladen: Can view.",
+        },
+      }],
+    },
+  };
+}
+
+async function ensureManualOnboardingChecklist(pageId) {
+  const matches = (await listAllBlockChildren(pageId)).filter(
+    (block) => block.type === "callout" && blockText(block).includes(MANUAL_ONBOARDING_CHECKLIST_MARKER),
+  );
+  if (matches.length > 1) {
+    throw new Error(`Worker page ${pageId} has multiple manual onboarding checklists; refusing to create another.`);
+  }
+  if (matches.length === 1) return matches[0].id;
+
+  await appendBlockChildren(pageId, [manualOnboardingChecklistBlock()]);
+  const refreshed = (await listAllBlockChildren(pageId)).filter(
+    (block) => block.type === "callout" && blockText(block).includes(MANUAL_ONBOARDING_CHECKLIST_MARKER),
+  );
+  if (refreshed.length !== 1) {
+    throw new Error(`Could not recover the manual onboarding checklist on worker page ${pageId}`);
+  }
+  return refreshed[0].id;
 }
 
 async function findExactChild(parentPageId, blockType, names) {
@@ -183,14 +245,32 @@ async function frontendsDataSourceId() {
     employeeFrontendsDataSourceId = dataSourceIdFromDatabase(await getDatabase(indexDatabase.id));
   }
 
-  const frontends = await getDataSource(employeeFrontendsDataSourceId);
+  let frontends = await getDataSource(employeeFrontendsDataSourceId);
+  assertPropertyTypes(frontends, FRONTENDS_CORE_SCHEMA);
+  const email = frontends.properties?.Email;
+  if (email && email.type !== "email") {
+    throw new Error(`Employee Front-ends property "Email" is ${email.type}, expected email`);
+  }
+  if (!email) {
+    await updateDataSource(employeeFrontendsDataSourceId, { Email: { email: {} } });
+    frontends = await getDataSource(employeeFrontendsDataSourceId);
+  }
   assertPropertyTypes(frontends, FRONTENDS_SCHEMA);
   return employeeFrontendsDataSourceId;
 }
 
 async function validateSchema() {
-  const d1 = await getDataSource(D1);
+  let d1 = await getDataSource(D1);
   assertPropertyTypes(d1, D1_SCHEMA);
+  const chartViewId = d1.properties?.[VACATION_CHART_VIEW_ID_PROPERTY];
+  if (chartViewId && chartViewId.type !== "rich_text") {
+    throw new Error(`D1 property "${VACATION_CHART_VIEW_ID_PROPERTY}" is ${chartViewId.type}, expected rich_text`);
+  }
+  if (!chartViewId) {
+    await updateDataSource(D1, { [VACATION_CHART_VIEW_ID_PROPERTY]: { rich_text: {} } });
+    d1 = await getDataSource(D1);
+  }
+  assertPropertyTypes(d1, { ...D1_SCHEMA, [VACATION_CHART_VIEW_ID_PROPERTY]: "rich_text" });
   const d8 = await getDataSource(D8);
   assertPropertyTypes(d8, { Standort: "title", Active: "checkbox" });
   const frontendsDataSource = await frontendsDataSourceId();
@@ -218,12 +298,8 @@ async function persistFrontend(rowId, page) {
   });
 }
 
-async function setFrontendIndexProperties(pageId, name, key, d1RecordId) {
-  await updatePage(pageId, {
-    "Vor- und Nachname": title(name),
-    "Worker Key": richText(key),
-    "D1 Record ID": richText(d1RecordId),
-  }, { icon: WORKER_FRONTEND_ICON });
+async function setFrontendIndexProperties(pageId, name, email, key, d1RecordId) {
+  await updatePage(pageId, frontendProperties(name, email, key, d1RecordId), { icon: WORKER_FRONTEND_ICON });
 }
 
 async function findRecoverableFrontend(name, key, d1RecordId) {
@@ -266,11 +342,12 @@ async function moveLegacyPageIntoIndex(page, frontendsDataSource) {
 
 async function resolveWorkerPage(row, name, key) {
   const rememberedId = d1Value(row, "Frontend Page ID") || d1Value(row, "User Page ID");
+  const email = emailValue(row);
   const frontendsDataSource = await frontendsDataSourceId();
 
   if (rememberedId) {
     const remembered = await moveLegacyPageIntoIndex(await getPage(rememberedId), frontendsDataSource);
-    await setFrontendIndexProperties(remembered.id, name, key, row.id);
+    await setFrontendIndexProperties(remembered.id, name, email, key, row.id);
     await persistFrontend(row.id, remembered);
     return remembered;
   }
@@ -280,18 +357,14 @@ async function resolveWorkerPage(row, name, key) {
   const existing = await findRecoverableFrontend(name, key, row.id);
   if (existing) {
     const recovered = await getPage(existing.id);
-    await setFrontendIndexProperties(recovered.id, name, key, row.id);
+    await setFrontendIndexProperties(recovered.id, name, email, key, row.id);
     await persistFrontend(row.id, recovered);
     return recovered;
   }
 
   const created = await createPage(
     { type: "data_source_id", data_source_id: frontendsDataSource },
-    {
-      "Vor- und Nachname": title(name),
-      "Worker Key": richText(key),
-      "D1 Record ID": richText(row.id),
-    },
+    frontendProperties(name, email, key, row.id),
     { icon: WORKER_FRONTEND_ICON },
   );
   // Persist immediately: every later stage can recover this exact page.
@@ -442,6 +515,7 @@ async function provisionWorker(row) {
 
     const standorte = await activeStandorte();
     const workerPage = await resolveWorkerPage(row, name, key);
+    await ensureManualOnboardingChecklist(workerPage.id);
 
     // D3 → D4. Each database ID is written to D1 before the
     // following stage, so a retry never creates a duplicate store or view.
@@ -463,6 +537,14 @@ async function provisionWorker(row) {
       archive: true,
     });
     await ensureArchivePresentation(d4.databaseId, d4.dataSourceId);
+    const vacationChartViewId = await ensureVacationChart(
+      workerPage.id,
+      d4.databaseId,
+      d4.dataSourceId,
+      berlinCurrentMonthKey(),
+      d1Value(row, VACATION_CHART_VIEW_ID_PROPERTY),
+    );
+    await updateD1(row.id, { [VACATION_CHART_VIEW_ID_PROPERTY]: richText(vacationChartViewId) });
 
     // Existing dates and active Standort options are preserved, never duplicated.
     const createdDayRows = await ensureCurrentMonthDayRows(d3.dataSourceId);
@@ -478,6 +560,7 @@ async function provisionWorker(row) {
       "D3 Data Source ID": richText(d3.dataSourceId),
       "D4 Database ID": richText(d4.databaseId),
       "D4 Data Source ID": richText(d4.dataSourceId),
+      [VACATION_CHART_VIEW_ID_PROPERTY]: richText(vacationChartViewId),
       "Sharing Status": select("Ready for Invite"),
       "Onboarding Status": select("Ready"),
       "Onboarding Error": richText(""),
@@ -538,4 +621,6 @@ module.exports = {
   berlinCurrentMonthKey,
   currentMonthDates,
   dayDatabaseProperties,
+  frontendProperties,
+  manualOnboardingChecklistBlock,
 };

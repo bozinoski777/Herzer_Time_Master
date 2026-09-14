@@ -5,10 +5,13 @@ const assert = require("node:assert/strict");
 
 const {
   ARCHIVE_MONTH_FORMULA,
+  VACATION_CHART_TITLE,
   archiveSchemaProperties,
   archiveViewPayload,
   currentMonthViewPayload,
   managementViewProperties,
+  vacationChartPayload,
+  vacationFilter,
 } = require("../scripts/frontend-presentation");
 
 function dataSource() {
@@ -61,6 +64,26 @@ test("D4 groups by formula month, sorts newest first, and hides technical fields
     payload.configuration.properties.find((property) => property.property_id === "month").visible,
     false,
   );
+});
+
+test("vacation number chart counts Urlaub rows through the prior completed month", () => {
+  assert.deepEqual(vacationFilter("2027-01"), {
+    and: [
+      { property: "Standort", select: { equals: "Urlaub" } },
+      { property: "Datum", date: { on_or_after: "2027-01-01" } },
+      { property: "Datum", date: { before: "2027-01-01" } },
+    ],
+  });
+  assert.deepEqual(vacationFilter("2027-10").and.at(-1), {
+    property: "Datum",
+    date: { before: "2027-10-01" },
+  });
+
+  const payload = vacationChartPayload(dataSource(), "2027-10");
+  assert.equal(payload.name, VACATION_CHART_TITLE);
+  assert.equal(payload.configuration.chart_type, "number");
+  assert.deepEqual(payload.configuration.value, { aggregator: "count" });
+  assert.equal(payload.configuration.height, "small");
 });
 
 test("management view retains existing settings while hiding frontend internals", () => {

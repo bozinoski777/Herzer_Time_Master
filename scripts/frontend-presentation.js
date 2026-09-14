@@ -10,9 +10,11 @@
 
 const {
   assertPropertyTypes,
+  createView,
   databaseIdFromDataSource,
   getDataSource,
   getView,
+  listAllBlockChildren,
   listAllViews,
   updateDataSource,
   updateDatabase,
@@ -23,6 +25,7 @@ const CURRENT_MONTH_DATABASE_TITLE = "Aktueller Monat";
 const ARCHIVE_DATABASE_TITLE = "Archiv";
 const ARCHIVE_MONTH_PROPERTY = "Monat";
 const ARCHIVE_MONTH_FORMULA = 'formatDate(prop("Datum"), "YYYY-MM")';
+const VACATION_CHART_TITLE = "Urlaubstage bis Ende letzten Monats";
 
 const DAY_SCHEMA = {
   Wochentag: "title",
@@ -36,6 +39,24 @@ const D4_VISIBLE_COLUMNS = ["Wochentag", "Datum", "Standort", "Stunden"];
 
 function textItems(content) {
   return [{ type: "text", text: { content } }];
+}
+
+function validMonth(targetMonth) {
+  if (!/^\d{4}-\d{2}$/.test(targetMonth || "")) return false;
+  const month = Number(targetMonth.slice(5, 7));
+  return month >= 1 && month <= 12;
+}
+
+function vacationFilter(targetMonth) {
+  if (!validMonth(targetMonth)) throw new Error(`Invalid month "${targetMonth}"`);
+  const year = targetMonth.slice(0, 4);
+  return {
+    and: [
+      { property: "Standort", select: { equals: "Urlaub" } },
+      { property: "Datum", date: { on_or_after: `${year}-01-01` } },
+      { property: "Datum", date: { before: `${targetMonth}-01` } },
+    ],
+  };
 }
 
 function propertyId(dataSource, propertyName) {
@@ -85,6 +106,27 @@ function archiveViewPayload(dataSource) {
         },
         hide_empty_groups: true,
       },
+    },
+  };
+}
+
+function vacationChartPayload(dataSource, targetMonth) {
+  assertPropertyTypes(dataSource, DAY_SCHEMA);
+  return {
+    name: VACATION_CHART_TITLE,
+    filter: vacationFilter(targetMonth),
+    configuration: {
+      type: "chart",
+      chart_type: "number",
+      value: { aggregator: "count" },
+      x_axis: null,
+      y_axis: null,
+      x_axis_property_id: null,
+      y_axis_property_id: null,
+      stack_by: null,
+      color_theme: "blue",
+      height: "small",
+      hide_title: false,
     },
   };
 }
@@ -181,6 +223,83 @@ async function ensureArchivePresentation(databaseId, dataSourceId) {
   await configureArchiveView(databaseId, dataSourceId);
 }
 
+function isVacationChart(view, dataSourceId) {
+  return (
+    view?.data_source_id === dataSourceId &&
+    view.type === "chart" &&
+    view.name === VACATION_CHART_TITLE
+  );
+}
+
+async function recoverVacationChartFromWorkerPage(workerPageId, dataSourceId) {
+  const databaseBlocks = (await listAllBlockChildren(workerPageId)).filter(
+    (block) => block.type === "child_database",
+  );
+  const candidates = [];
+
+  for (const databaseBlock of databaseBlocks) {
+    const references = await listAllViews(databaseBlock.id);
+    const views = await Promise.all(references.map((reference) => getView(reference.id)));
+    candidates.push(...views.filter((view) => isVacationChart(view, dataSourceId)));
+  }
+
+  if (candidates.length > 1) {
+    throw new Error(
+      `Worker page ${workerPageId} has multiple "${VACATION_CHART_TITLE}" chart views; refusing to create another.`,
+    );
+  }
+  return candidates[0];
+}
+
+async function ensureVacationChart(
+  workerPageId,
+  d4DatabaseId,
+  d4DataSourceId,
+  targetMonth,
+  knownViewId = "",
+) {
+  const dataSource = await getDataSource(d4DataSourceId);
+  const payload = vacationChartPayload(dataSource, targetMonth);
+  let view;
+
+  if (knownViewId) {
+    view = await getView(knownViewId);
+    if (!isVacationChart(view, d4DataSourceId)) {
+      throw new Error(`D1 Urlaub chart view ${knownViewId} does not match the worker D4 data source`);
+    }
+  } else {
+    view = await recoverVacationChartFromWorkerPage(workerPageId, d4DataSourceId);
+  }
+
+  if (view) {
+    await updateView(view.id, payload);
+    return view.id;
+  }
+
+  const created = await createView({
+    data_source_id: d4DataSourceId,
+    name: VACATION_CHART_TITLE,
+    type: "chart",
+    create_database: {
+      parent: { type: "page_id", page_id: workerPageId },
+      position: { type: "after_block", block_id: d4DatabaseId },
+    },
+    ...payload,
+  });
+  return created.id;
+}
+
+async function updateVacationChartForRollover(viewId, d4DataSourceId, targetMonth) {
+  if (!viewId) return false;
+  const view = await getView(viewId);
+  if (!isVacationChart(view, d4DataSourceId)) {
+    throw new Error(`D1 Urlaub chart view ${viewId} does not match the worker D4 data source`);
+  }
+  const dataSource = await getDataSource(d4DataSourceId);
+  await updateView(view.id, vacationChartPayload(dataSource, targetMonth));
+  return true;
+}
+
 function managementViewProperties(dataSource, configuration = {}) {
   const hiddenNames = new Set(["Worker Key", "D1 Record ID"]);
   const hiddenIds = new Set(
@@ -227,6 +346,7 @@ module.exports = {
   ARCHIVE_MONTH_FORMULA,
   ARCHIVE_MONTH_PROPERTY,
   CURRENT_MONTH_DATABASE_TITLE,
+  VACATION_CHART_TITLE,
   archiveSchemaProperties,
   archiveViewPayload,
   configureArchiveView,
@@ -235,6 +355,10 @@ module.exports = {
   ensureArchivePresentation,
   ensureArchiveSchema,
   ensureCurrentMonthPresentation,
+  ensureVacationChart,
   hideInternalFrontendColumnsInManagementView,
   managementViewProperties,
+  updateVacationChartForRollover,
+  vacationChartPayload,
+  vacationFilter,
 };

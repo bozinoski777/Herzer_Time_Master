@@ -9,8 +9,11 @@ This repository automates only the **Herzer 2.0 → Secure Timekeeping POC**. It
 ```text
 Employee Front-ends (management only)
 └── Worker name (the page shared with that one worker)
+    ├── visible properties: Vor- und Nachname, Email
+    ├── 📌 Manuelle Freigabe-Checkliste (delete after completion)
     ├── Aktueller Monat — inline, current-month table
-    └── Archiv — inline archive table
+    ├── Archiv — inline archive table
+    └── Urlaubstage bis Ende letzten Monats — linked D4 number chart
 ```
 
 The automation prepares pages and records invite readiness. It intentionally does **not** call a browser, invite guests, or change Notion sharing permissions: those actions are not part of the public Notion API and must remain a deliberate management step.
@@ -21,8 +24,9 @@ For every future worker, onboarding sets the database and data-source titles exa
 
 - **Aktueller Monat:** only `Wochentag`, `Datum`, `Standort`, and `Stunden`; sorted by `Datum` ascending, with no date filter.
 - **Archiv:** sorted by `Datum` descending; grouped newest-first by derived formula `Monat = formatDate(prop("Datum"), "YYYY-MM")`; `Sync Key` and the technical `Monat` property are hidden from its worker-facing table view. The formula calculates for every archive row automatically, including rows created by later rollovers.
+- **Urlaubstage bis Ende letzten Monats:** a small linked D4 number chart on the worker page. It counts `Standort = Urlaub` from January 1 of the current Berlin calendar year through the end of the prior month. It uses the existing D4 data source, creates no extra time-entry store, and rollover refreshes its month boundary.
 
-The internal Employee Front-ends properties **`Worker Key`** and **`D1 Record ID`** remain intact for safe recovery and routing. Onboarding hides both columns in the identifiable default **management table view**, but Notion's public API does not offer an endpoint for the properties shown on an opened database row page. Make this one-time workspace setting in **Employee Front-ends → Customize layout → Properties**: hide `Worker Key` and `D1 Record ID` and apply the layout to every page in the database. This controls what a shared worker page exposes; hiding columns alone does not.
+The internal Employee Front-ends properties **`Worker Key`** and **`D1 Record ID`** remain intact for safe recovery and routing; **`Email`** is a visible worker-facing property. Onboarding hides the two internal columns in the identifiable default **management table view**, but Notion's public API does not offer an endpoint for the properties shown on an opened row page. For every future worker page, onboarding adds a removable **Manuelle Freigabe-Checkliste** callout that tells the onboarder to make this one-time workspace setting in **Employee Front-ends → Customize layout → Properties**: show `Email`, hide `Worker Key` and `D1 Record ID`, and apply the layout to every page in the database. The same callout lists the three required manual access grants: frontend page **Can view**, D3 **Can edit content**, and D4 **Can view**. Delete the callout after those four checks are complete.
 
 After onboarding is `Ready` and `Sharing Status` is `Ready for Invite`:
 
@@ -35,7 +39,7 @@ Never give a worker access to D1, D7, D8, Control & Automation, Management, the 
 
 ## What runs
 
-- **Onboarding** finds `Active = true` D1 records whose `Onboarding Status` is `Pending` or `Provisioning`. It records `Provisioning`, generates a Worker Key if needed, creates or recovers exactly one worker page in `Employee Front-ends`, prepares D3 (`Aktueller Monat`) then D4 (`Archiv`), configures their existing default views, fills missing current-month D3 days, adds active D8 Standort options and the work choices to D3 and D4, writes IDs immediately to D1, sets `Sharing Status = Ready for Invite`, then sets `Onboarding Status = Ready`.
+- **Onboarding** finds `Active = true` D1 records whose `Onboarding Status` is `Pending` or `Provisioning`. It records `Provisioning`, generates a Worker Key if needed, creates or recovers exactly one worker page in `Employee Front-ends`, adds the removable manual-invite checklist and visible email property, prepares D3 (`Aktueller Monat`) then D4 (`Archiv`), creates one linked D4 vacation number chart, configures the existing default views, fills missing current-month D3 days, adds active D8 Standort options and the work choices to D3 and D4, writes IDs immediately to D1, sets `Sharing Status = Ready for Invite`, then sets `Onboarding Status = Ready`.
 - **Standort sync** preserves the existing D8 → D3/D7 behavior: active D8 `Standort` values and the work choices are added (never removed) to every active, ready worker D3 and D7.
 - **Management sync** preserves the existing D3 → D7 behavior: `Worker Key|Datum` is the D7 `Sync Key`, so each source day is created once or updated idempotently. Blank values are also written, so D7 reflects a worker's corrections instead of retaining stale data.
 - **Month rollover** runs every day, including weekends. It uses the `Europe/Berlin` calendar month, not “the first of the month,” so a missed run catches up safely. It archives every completed D3 month for workers with valid D3/D4 references (including inactive workers), verifies the worker’s D4 archive before soft-archiving any D3 source rows, and creates the current month only for `Active = true` workers.
@@ -92,8 +96,8 @@ Configure the Notion integration with **read content**, **update content**, and 
 
 | Resource | Required properties |
 | --- | --- |
-| **D1** | `Vor- und Nachname` (Title), `Email` (Email), `Active` (Checkbox), `Onboarding Status` (Select), `Onboarding Error` (Text), `Onboarded At` (Date), `Worker Key` (Text), `Frontend Page ID` (Text), `Frontend URL` (URL), `Sharing Status` (Select), `User Page ID` (legacy Text), `D3 Database ID` (Text), `D3 Data Source ID` (Text), `D4 Database ID` (Text), `D4 Data Source ID` (Text), `Current Month` (Text), `Last Archived Month` (Text), `Last Rollover At` (Date), `Rollover Status` (Select: `Ready` / `Running` / `Error`), `Rollover Error` (Text) |
-| **Employee Front-ends** | `Vor- und Nachname` (Title), `Worker Key` (Text), `D1 Record ID` (Text) |
+| **D1** | `Vor- und Nachname` (Title), `Email` (Email), `Active` (Checkbox), `Onboarding Status` (Select), `Onboarding Error` (Text), `Onboarded At` (Date), `Worker Key` (Text), `Frontend Page ID` (Text), `Frontend URL` (URL), `Sharing Status` (Select), `User Page ID` (legacy Text), `D3 Database ID` (Text), `D3 Data Source ID` (Text), `D4 Database ID` (Text), `D4 Data Source ID` (Text), `Urlaub Chart View ID` (Text), `Current Month` (Text), `Last Archived Month` (Text), `Last Rollover At` (Date), `Rollover Status` (Select: `Ready` / `Running` / `Error`), `Rollover Error` (Text) |
+| **Employee Front-ends** | `Vor- und Nachname` (Title), `Email` (Email, visible), `Worker Key` (Text, hidden from worker), `D1 Record ID` (Text, hidden from worker) |
 | **D3** created by onboarding | `Wochentag` (Title), `Datum` (Date), `Stunden` (Number), `Standort` (Select: active locations plus `Arbeit`, `Urlaub`, `Krank`, `Feiertag`, `Sonderurlaub`, and `Überstundenausgleich`) |
 | **D4** | `Wochentag` (Title), `Datum` (Date), `Stunden` (Number), `Standort` (Select), `Sync Key` (Text), `Monat` (Formula: `formatDate(prop("Datum"), "YYYY-MM")`) |
 | **D7** | `Wochentag` (Title), `Datum` (Date), `Stunden` (Number), `Standort` (Select), `Vor- und Nachname` (Text), `Worker Key` (Text), `Sync Key` (Text), `Source Page ID` (Text), `Source Database ID` (Text), `Last Synced At` (Date) |
@@ -110,6 +114,7 @@ Run it first with **execute** unchecked. That is a read-only preflight. If it fi
 ## Failure and recovery behavior
 
 - New Worker Key, frontend-page ID/URL, and D3/D4 IDs are saved to D1 as soon as the relevant object exists.
+- The D1 `Urlaub Chart View ID` is saved immediately after creating the linked chart, so a retry reuses the same chart rather than creating another one.
 - Current-month day creation checks each `Datum` first; it never recreates an existing date.
 - Standort synchronization preserves all existing select options before adding active D8 sites and the standard work choices.
 - New D4 databases include `Sync Key` and the derived `Monat` formula from the start. The formula is read-only row data derived from `Datum`, so rollover never has to write a month value or alter existing D4 upserts.
