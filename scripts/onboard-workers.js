@@ -67,6 +67,7 @@ const WEEKDAYS = [
   "Freitag",
   "Samstag",
 ];
+const { HOLIDAY_HOURS, augsburgPaidHolidayName } = require("./augsburg-holidays");
 const WORKER_FRONTEND_ICON = { type: "emoji", emoji: "👤" };
 const VACATION_CHART_VIEW_ID_PROPERTY = "Urlaub Chart View ID";
 const MANUAL_ONBOARDING_CHECKLIST_ITEMS = [
@@ -517,9 +518,14 @@ async function ensureCurrentMonthDayRows(dataSourceId) {
   let created = 0;
   for (const { isoDate, weekday } of expectedDays) {
     if (existingDates.has(isoDate)) continue;
+    const holiday = augsburgPaidHolidayName(isoDate);
     await createPage(
       { type: "data_source_id", data_source_id: dataSourceId },
-      { Wochentag: title(weekday), Datum: date(isoDate) },
+      {
+        Wochentag: title(weekday),
+        Datum: date(isoDate),
+        ...(holiday ? { Standort: select("Feiertag"), Stunden: { number: HOLIDAY_HOURS } } : {}),
+      },
     );
     created += 1;
   }

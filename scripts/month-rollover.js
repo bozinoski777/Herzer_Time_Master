@@ -36,6 +36,7 @@ const {
 
 const { workerStandortNames } = require("./worker-standort-options");
 const { updateVacationChartForRollover } = require("./frontend-presentation");
+const { HOLIDAY_HOURS, augsburgPaidHolidayName } = require("./augsburg-holidays");
 
 const BERLIN_TIME_ZONE = "Europe/Berlin";
 const WEEKDAYS = [
@@ -487,9 +488,14 @@ async function ensureCurrentMonthRows(worker, targetMonth, currentRows) {
   let created = 0;
   for (const { isoDate, weekday } of monthDays(targetMonth)) {
     if (existingDates.has(isoDate)) continue;
+    const holiday = augsburgPaidHolidayName(isoDate);
     await createPage(
       { type: "data_source_id", data_source_id: worker.d3DataSourceId },
-      { Wochentag: title(weekday), Datum: date(isoDate) },
+      {
+        Wochentag: title(weekday),
+        Datum: date(isoDate),
+        ...(holiday ? { Standort: select("Feiertag"), Stunden: { number: HOLIDAY_HOURS } } : {}),
+      },
     );
     created += 1;
   }

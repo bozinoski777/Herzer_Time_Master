@@ -8,7 +8,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "check": "node --check scripts/notion.js && node --check scripts/frontend-presentation.js && node --check scripts/worker-standort-options.js && node --check scripts/onboard-workers.js && node --check scripts/sync-standorte.js && node --check scripts/sync-management.js && node --check scripts/month-rollover.js && node --check scripts/migrate-tagtyp-to-standort.js && node --check scripts/document-control-automation.js",
+    "check": "node --check scripts/notion.js && node --check scripts/frontend-presentation.js && node --check scripts/worker-standort-options.js && node --check scripts/augsburg-holidays.js && node --check scripts/onboard-workers.js && node --check scripts/sync-standorte.js && node --check scripts/sync-management.js && node --check scripts/month-rollover.js && node --check scripts/migrate-tagtyp-to-standort.js && node --check scripts/document-control-automation.js",
     "test": "node --test test/*.test.js",
     "onboard-workers": "node scripts/onboard-workers.js",
     "sync-standorte": "node scripts/sync-standorte.js",
