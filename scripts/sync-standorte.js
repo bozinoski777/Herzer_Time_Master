@@ -9,8 +9,11 @@ const {
   richTextValue,
   titleValue,
   updateDataSource,
+  updatePage,
 } = require("./notion");
 const { workerStandortNames, workerStandortOptions } = require("./worker-standort-options");
+
+const D7_STANDORT_RELATION = "Standort (D8)";
 
 const {
   D1_DATA_SOURCE_ID: D1,
@@ -31,7 +34,18 @@ async function validateSchema() {
   });
 
   const d8 = await getDataSource(D8);
-  assertPropertyTypes(d8, { Standort: "title", Active: "checkbox" });
+  assertPropertyTypes(d8, {
+    Standort: "title",
+    Active: "checkbox",
+    "Arbeitszeiten (D7)": "relation",
+    "Gearbeitete Stunden": "rollup",
+  });
+
+  const d7 = await getDataSource(D7);
+  assertPropertyTypes(d7, {
+    Standort: "select",
+    [D7_STANDORT_RELATION]: "relation",
+  });
 }
 
 async function getActiveStandorte() {
@@ -59,6 +73,64 @@ async function readyWorkers() {
     name: titleValue(row.properties["Vor- und Nachname"]).trim() || row.id,
     d3DataSourceId: workerD3Id(row),
   }));
+}
+
+function d8StandortIndex(rows) {
+  const byName = new Map();
+
+  for (const row of rows) {
+    const name = titleValue(row.properties.Standort).trim();
+    if (!name) continue;
+    if (byName.has(name)) {
+      throw new Error(
+        `D8 contains more than one Standort named "${name}". Resolve the duplicate before syncing relations.`,
+      );
+    }
+    byName.set(name, row.id);
+  }
+
+  return byName;
+}
+
+function relationIds(row) {
+  return (row.properties[D7_STANDORT_RELATION]?.relation || []).map((related) => related.id);
+}
+
+/**
+ * D7's relation is automation-owned and always mirrors its Standort select.
+ * D8 includes inactive locations too, so historic rows keep their site link.
+ */
+function planD7StandortRelations(d7Rows, d8Rows) {
+  const d8ByName = d8StandortIndex(d8Rows);
+  const updates = [];
+
+  for (const row of d7Rows) {
+    const selectedName = row.properties.Standort?.select?.name || "";
+    const relatedD8Id = d8ByName.get(selectedName);
+    const desiredIds = relatedD8Id ? [relatedD8Id] : [];
+    const currentIds = relationIds(row);
+
+    if (JSON.stringify(currentIds) !== JSON.stringify(desiredIds)) {
+      updates.push({ pageId: row.id, relatedD8Id: relatedD8Id || null });
+    }
+  }
+
+  return updates;
+}
+
+async function syncD7StandortRelations() {
+  const [d8Rows, d7Rows] = await Promise.all([queryAll(D8), queryAll(D7)]);
+  const updates = planD7StandortRelations(d7Rows, d8Rows);
+
+  for (const update of updates) {
+    await updatePage(update.pageId, {
+      [D7_STANDORT_RELATION]: {
+        relation: update.relatedD8Id ? [{ id: update.relatedD8Id }] : [],
+      },
+    });
+  }
+
+  return updates.length;
 }
 
 /** D7 is history, so it retains every existing option and only gains new ones. */
@@ -190,6 +262,9 @@ async function main() {
 
   const d7Added = await addMissingStandortOptions(D7, standorte);
   console.log(`D7: ${d7Added} Standort option(s) added.`);
+
+  const related = await syncD7StandortRelations();
+  console.log(`D7: ${related} Standort relation(s) reconciled.`);
 }
 
 if (require.main === module) {
@@ -199,4 +274,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { planD3StandortOptions };
+module.exports = { planD3StandortOptions, planD7StandortRelations };
