@@ -77,6 +77,7 @@ jobs:
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           D1_DATA_SOURCE_ID: ${{ secrets.D1_DATA_SOURCE_ID }}
+          D7_DATA_SOURCE_ID: ${{ secrets.D7_DATA_SOURCE_ID }}
           D8_DATA_SOURCE_ID: ${{ secrets.D8_DATA_SOURCE_ID }}
           # Kept empty until the one-worker simulation has been approved. A
           # disabled scheduled run exits before it reads or changes Notion.

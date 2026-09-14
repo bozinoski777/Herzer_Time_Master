@@ -3,8 +3,10 @@ name: Standort sync
 on:
   # This remains a distinct workflow/run in GitHub, but begins only after the
   # matching Daily worker sync run completes. The source job publishes a
-  # completion marker only after the actual D3→D7 sync, so a skipped DST
-  # helper run cannot perform a Standort synchronization.
+  # completion marker only after the actual D3→D7 command finishes, so a
+  # skipped DST helper run cannot perform a Standort synchronization. A marker
+  # is also published when one worker fails: successful D7 writes still need
+  # their independent Standort/D8 reconciliation.
   workflow_run:
     workflows: ["Daily worker sync"]
     types: [completed]
@@ -41,14 +43,14 @@ jobs:
                 per_page: 100,
               },
             );
-            const completed =
-              context.payload.workflow_run.conclusion === "success" &&
+            const commandFinished =
+              ["success", "failure"].includes(context.payload.workflow_run.conclusion) &&
               artifacts.some(
                 (artifact) =>
                   artifact.name === "daily-worker-sync-complete" &&
                   !artifact.expired,
               );
-            core.setOutput("run_standort", completed ? "true" : "false");
+            core.setOutput("run_standort", commandFinished ? "true" : "false");
 
   standorte:
     name: Sync active D3 Standort options

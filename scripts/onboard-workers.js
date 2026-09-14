@@ -37,7 +37,14 @@ const {
   ensureVacationChart,
   hideInternalFrontendColumnsInManagementView,
 } = require("./frontend-presentation");
-const { workerStandortNames, workerStandortOptions } = require("./worker-standort-options");
+const { workerStandortOptions } = require("./worker-standort-options");
+const { reconcileSelectOptions } = require("./select-options");
+const {
+  D1_OFFBOARDING_SCHEMA,
+  OFFBOARDING_STATUS,
+  ensureD1OffboardingSchema,
+  ensureD1OffboardingView,
+} = require("./offboarding");
 
 const { D1_DATA_SOURCE_ID: D1, D8_DATA_SOURCE_ID: D8 } = requireEnv(
   "D1_DATA_SOURCE_ID",
@@ -113,7 +120,11 @@ const D1_CORE_SCHEMA = {
   "D4 Database ID": "rich_text",
   "D4 Data Source ID": "rich_text",
 };
-const D1_SCHEMA = { ...D1_CORE_SCHEMA, [ANNUAL_VACATION_PROPERTY]: "number" };
+const D1_SCHEMA = {
+  ...D1_CORE_SCHEMA,
+  ...D1_OFFBOARDING_SCHEMA,
+  [ANNUAL_VACATION_PROPERTY]: "number",
+};
 
 const FRONTENDS_CORE_SCHEMA = {
   "Vor- und Nachname": "title",
@@ -330,7 +341,8 @@ async function frontendsDataSourceId() {
 }
 
 async function validateSchema() {
-  let d1 = await getDataSource(D1);
+  let d1 = await ensureD1OffboardingSchema(D1);
+  await ensureD1OffboardingView(D1);
   assertPropertyTypes(d1, D1_CORE_SCHEMA);
   const chartViewId = d1.properties?.[VACATION_CHART_VIEW_ID_PROPERTY];
   const annualVacation = d1.properties?.[ANNUAL_VACATION_PROPERTY];
@@ -383,20 +395,95 @@ async function setFrontendIndexProperties(pageId, name, email, key, d1RecordId, 
   );
 }
 
-async function findRecoverableFrontend(name, key, d1RecordId) {
-  const rows = await queryAll(await frontendsDataSourceId());
-  const matches = rows.filter((candidate) => {
-    const candidateName = titleValue(candidate.properties["Vor- und Nachname"]).trim();
-    const candidateKey = richTextValue(candidate.properties["Worker Key"]).trim();
-    const candidateD1Id = richTextValue(candidate.properties["D1 Record ID"]).trim();
-    return candidateName === name || candidateKey === key || candidateD1Id === d1RecordId;
-  });
-  if (matches.length > 1) {
+function frontendIdentity(candidate) {
+  return {
+    d1RecordId: richTextValue(candidate.properties["D1 Record ID"]).trim(),
+    key: richTextValue(candidate.properties["Worker Key"]).trim(),
+  };
+}
+
+function assertFrontendIdentity(candidate, key, d1RecordId) {
+  const expectedD1RecordId = String(d1RecordId || "").trim();
+  const expectedKey = String(key || "").trim();
+  const stored = frontendIdentity(candidate);
+  if (!expectedD1RecordId) {
+    throw new Error("A D1 Record ID is required to validate a worker frontend");
+  }
+  if (stored.d1RecordId && stored.d1RecordId !== expectedD1RecordId) {
     throw new Error(
-      `Employee Front-ends has multiple rows that could belong to ${name}; refusing to create or choose a duplicate.`,
+      `Frontend ${candidate.id} belongs to D1 Record ID ${stored.d1RecordId}, not ${expectedD1RecordId}.`,
     );
   }
-  return matches[0];
+  if (stored.key && expectedKey && stored.key !== expectedKey) {
+    throw new Error(
+      `Frontend ${candidate.id} belongs to Worker Key ${stored.key}, not ${expectedKey}.`,
+    );
+  }
+  return candidate;
+}
+
+function selectRecoverableFrontend(rows, key, d1RecordId) {
+  const expectedD1RecordId = String(d1RecordId || "").trim();
+  const expectedKey = String(key || "").trim();
+  if (!expectedD1RecordId) {
+    throw new Error("A D1 Record ID is required to recover a worker frontend");
+  }
+
+  const d1Matches = rows.filter(
+    (candidate) => frontendIdentity(candidate).d1RecordId === expectedD1RecordId,
+  );
+  if (d1Matches.length > 1) {
+    throw new Error(
+      `Employee Front-ends has multiple rows with D1 Record ID ${expectedD1RecordId}; refusing to choose one.`,
+    );
+  }
+
+  // Empty Worker Keys are never identifiers. A key is considered only after
+  // the exact D1 record lookup, and duplicate keys are always unsafe.
+  const keyMatches = expectedKey
+    ? rows.filter((candidate) => frontendIdentity(candidate).key === expectedKey)
+    : [];
+  if (keyMatches.length > 1) {
+    throw new Error(
+      `Employee Front-ends has multiple rows with Worker Key ${expectedKey}; refusing to choose one.`,
+    );
+  }
+
+  if (d1Matches.length === 1) {
+    const d1Match = d1Matches[0];
+    if (keyMatches.length === 1 && keyMatches[0].id !== d1Match.id) {
+      throw new Error(
+        `D1 Record ID ${expectedD1RecordId} and Worker Key ${expectedKey} identify different frontend rows.`,
+      );
+    }
+    const storedKey = frontendIdentity(d1Match).key;
+    if (storedKey && expectedKey && storedKey !== expectedKey) {
+      throw new Error(
+        `Frontend ${d1Match.id} has D1 Record ID ${expectedD1RecordId} but Worker Key ${storedKey}, not ${expectedKey}.`,
+      );
+    }
+    return d1Match;
+  }
+
+  if (keyMatches.length === 0) return undefined;
+
+  const keyMatch = keyMatches[0];
+  const keyMatchD1RecordId = frontendIdentity(keyMatch).d1RecordId;
+  if (keyMatchD1RecordId && keyMatchD1RecordId !== expectedD1RecordId) {
+    throw new Error(
+      `Worker Key ${expectedKey} belongs to D1 Record ID ${keyMatchD1RecordId}, not ${expectedD1RecordId}.`,
+    );
+  }
+  return keyMatch;
+}
+
+async function findRecoverableFrontend(name, key, d1RecordId) {
+  const rows = await queryAll(await frontendsDataSourceId());
+  try {
+    return selectRecoverableFrontend(rows, key, d1RecordId);
+  } catch (failure) {
+    throw new Error(`Cannot recover the frontend for ${name}: ${errorMessage(failure)}`);
+  }
 }
 
 async function moveLegacyPageIntoIndex(page, frontendsDataSource) {
@@ -428,7 +515,8 @@ async function resolveWorkerPage(row, name, key) {
   const frontendsDataSource = await frontendsDataSourceId();
 
   if (rememberedId) {
-    const remembered = await moveLegacyPageIntoIndex(await getPage(rememberedId), frontendsDataSource);
+    const rememberedPage = assertFrontendIdentity(await getPage(rememberedId), key, row.id);
+    const remembered = await moveLegacyPageIntoIndex(rememberedPage, frontendsDataSource);
     await setFrontendIndexProperties(remembered.id, name, email, key, row.id, annualVacation);
     await persistFrontend(row.id, remembered);
     return remembered;
@@ -527,29 +615,34 @@ async function resolveWorkerDatabase(row, parentPageId, labels) {
   return { ...created, created: true };
 }
 
+function recoveredStandortOptions(existing, standorte) {
+  const existingNames = new Set(existing.map((option) => option.name));
+  const additions = workerStandortOptions(standorte).filter(
+    (option) => !existingNames.has(option.name),
+  );
+  return {
+    additions,
+    options: reconcileSelectOptions(existing, additions, { retainExisting: true }),
+  };
+}
+
 async function ensureStandortOptions(dataSourceId, standorte) {
   const dataSource = await getDataSource(dataSourceId);
   const property = dataSource.properties?.Standort;
   if (!property || property.type !== "select") {
     throw new Error(`Data source ${dataSourceId} needs a Select property named "Standort"`);
   }
-  const existing = property.select.options || [];
-  const existingNames = new Set(existing.map((option) => option.name));
-  const additions = workerStandortNames(standorte).filter((name) => !existingNames.has(name));
-  if (additions.length === 0) return 0;
+  const plan = recoveredStandortOptions(property.select.options || [], standorte);
+  if (plan.additions.length === 0) return 0;
 
   await updateDataSource(dataSourceId, {
     Standort: {
       select: {
-        // Existing IDs are included so historic select values are never removed.
-        options: [
-          ...existing.map((option) => ({ id: option.id, name: option.name })),
-          ...additions.map((name) => ({ name, color: "blue" })),
-        ],
+        options: plan.options,
       },
     },
   });
-  return additions.length;
+  return plan.additions.length;
 }
 
 async function ensureCurrentMonthDayRows(dataSourceId) {
@@ -649,10 +742,17 @@ async function provisionWorker(row) {
       "D4 Database ID": richText(d4.databaseId),
       "D4 Data Source ID": richText(d4.dataSourceId),
       [VACATION_CHART_VIEW_ID_PROPERTY]: richText(vacationChartViewId),
+      "Current Month": richText(berlinCurrentMonthKey()),
       "Sharing Status": select("Ready for Invite"),
       "Onboarding Status": select("Ready"),
       "Onboarding Error": richText(""),
       "Onboarded At": date(new Date().toISOString()),
+      "Offboarding Status": select(OFFBOARDING_STATUS.ACTIVE),
+      "Offboarding Error": richText(""),
+      "Final Sync At": date(""),
+      "Frontend Access Revoked": { checkbox: false },
+      "D3 Access Revoked": { checkbox: false },
+      "D4 Access Revoked": { checkbox: false },
     });
     console.log(`${name}: Ready (${createdDayRows} current-month row(s) created; manual invite pending)`);
   } catch (failure) {
@@ -738,6 +838,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  assertFrontendIdentity,
   berlinCurrentMonthKey,
   annualVacationValue,
   currentMonthDates,
@@ -746,4 +847,6 @@ module.exports = {
   frontendProperties,
   hasAnnualVacationValue,
   manualOnboardingChecklistBlocks,
+  recoveredStandortOptions,
+  selectRecoverableFrontend,
 };

@@ -26,6 +26,7 @@ const {
   ensureCurrentMonthPresentation,
 } = require("./frontend-presentation");
 const { WORK_TYPE_OPTIONS } = require("./worker-standort-options");
+const { reconcileSelectOptions } = require("./select-options");
 
 const {
   D1_DATA_SOURCE_ID: D1,
@@ -51,29 +52,13 @@ function unique(values) {
   return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
 }
 
-function optionPayload(option, keepId = false) {
-  return {
-    ...(keepId && option.id ? { id: option.id } : {}),
-    name: option.name,
-    ...(option.color ? { color: option.color } : {}),
-  };
-}
-
 function mergeStandortOptions(standortOptions, legacyOptions, legacyValues) {
-  const output = standortOptions.map((option) => optionPayload(option, true));
-  const known = new Set(output.map((option) => option.name));
   const candidates = [
     ...WORK_TYPE_OPTIONS,
-    ...legacyOptions.map((option) => optionPayload(option)),
+    ...legacyOptions,
     ...unique(legacyValues).map((name) => ({ name, color: "blue" })),
   ];
-
-  for (const option of candidates) {
-    if (known.has(option.name)) continue;
-    known.add(option.name);
-    output.push(option);
-  }
-  return output;
+  return reconcileSelectOptions(standortOptions, candidates, { retainExisting: true });
 }
 
 function optionNames(options) {

@@ -11,7 +11,13 @@ const {
   updateDataSource,
   updatePage,
 } = require("./notion");
-const { workerStandortNames, workerStandortOptions } = require("./worker-standort-options");
+const {
+  WORK_TYPE_OPTIONS,
+  workerStandortNames,
+  workerStandortOptions,
+} = require("./worker-standort-options");
+const { reconcileSelectOptions } = require("./select-options");
+const { hasPendingRollover } = require("./rollover-manifest");
 
 const D7_STANDORT_RELATION = "Standort (D8)";
 
@@ -25,6 +31,14 @@ function workerD3Id(row) {
   return richTextValue(row.properties["D3 Data Source ID"]).trim();
 }
 
+function shouldSyncWorkerD3Options(worker) {
+  return !hasPendingRollover(worker);
+}
+
+function normalizedNotionId(value) {
+  return String(value || "").replaceAll("-", "").toLowerCase();
+}
+
 async function validateSchema() {
   const d1 = await getDataSource(D1);
   assertPropertyTypes(d1, {
@@ -32,7 +46,15 @@ async function validateSchema() {
     "Onboarding Status": "select",
     "D3 Data Source ID": "rich_text",
   });
+  const rolloverManifest = d1.properties?.["Rollover Manifest"];
+  if (rolloverManifest && rolloverManifest.type !== "rich_text") {
+    throw new Error(`D1 property "Rollover Manifest" is ${rolloverManifest.type}, expected rich_text`);
+  }
 
+  await validateStandortRelationSchema();
+}
+
+async function validateStandortRelationSchema() {
   const d8 = await getDataSource(D8);
   assertPropertyTypes(d8, {
     Standort: "title",
@@ -72,6 +94,11 @@ async function readyWorkers() {
   return rows.map((row) => ({
     name: titleValue(row.properties["Vor- und Nachname"]).trim() || row.id,
     d3DataSourceId: workerD3Id(row),
+    d3DatabaseId: richTextValue(row.properties["D3 Database ID"]).trim(),
+    d4DatabaseId: richTextValue(row.properties["D4 Database ID"]).trim(),
+    d4DataSourceId: richTextValue(row.properties["D4 Data Source ID"]).trim(),
+    rolloverManifest: richTextValue(row.properties["Rollover Manifest"]).trim(),
+    rolloverStatus: row.properties["Rollover Status"]?.select?.name || "",
   }));
 }
 
@@ -102,11 +129,18 @@ function relationIds(row) {
  */
 function planD7StandortRelations(d7Rows, d8Rows) {
   const d8ByName = d8StandortIndex(d8Rows);
+  const workTypeNames = new Set(WORK_TYPE_OPTIONS.map((option) => option.name));
   const updates = [];
 
   for (const row of d7Rows) {
     const selectedName = row.properties.Standort?.select?.name || "";
     const relatedD8Id = d8ByName.get(selectedName);
+    if (selectedName && !relatedD8Id && !workTypeNames.has(selectedName)) {
+      throw new Error(
+        `D7 row ${row.id} uses Standort "${selectedName}", but D8 has no matching location. ` +
+          "Create/correct the D8 Standort before clearing or changing its relation.",
+      );
+    }
     const desiredIds = relatedD8Id ? [relatedD8Id] : [];
     const currentIds = relationIds(row);
 
@@ -118,8 +152,9 @@ function planD7StandortRelations(d7Rows, d8Rows) {
   return updates;
 }
 
-async function syncD7StandortRelations() {
-  const [d8Rows, d7Rows] = await Promise.all([queryAll(D8), queryAll(D7)]);
+async function syncD7StandortRelations(d7Filter, { verify = false } = {}) {
+  await validateStandortRelationSchema();
+  const [d8Rows, d7Rows] = await Promise.all([queryAll(D8), queryAll(D7, d7Filter)]);
   const updates = planD7StandortRelations(d7Rows, d8Rows);
 
   for (const update of updates) {
@@ -130,7 +165,26 @@ async function syncD7StandortRelations() {
     });
   }
 
+  if (verify) {
+    const remaining = planD7StandortRelations(await queryAll(D7, d7Filter), d8Rows);
+    if (remaining.length > 0) {
+      throw new Error(
+        `D7 Standort relation verification failed for ${remaining.length} row(s)`,
+      );
+    }
+  }
+
   return updates.length;
+}
+
+function standortOptionAdditions(existingOptions, standorte) {
+  const existingNames = new Set(existingOptions.map((option) => option.name));
+  const desiredByName = new Map(
+    workerStandortOptions(standorte).map((option) => [option.name, option]),
+  );
+  return standorte
+    .filter((name) => !existingNames.has(name))
+    .map((name) => desiredByName.get(name) || { name, color: "blue" });
 }
 
 /** D7 is history, so it retains every existing option and only gains new ones. */
@@ -143,19 +197,18 @@ async function addMissingStandortOptions(dataSourceId, standorte) {
   }
 
   const existingOptions = property.select.options || [];
-  const existingNames = new Set(existingOptions.map((option) => option.name));
-  const additions = standorte.filter((name) => !existingNames.has(name));
+  const additions = standortOptionAdditions(existingOptions, standorte);
 
   if (additions.length === 0) return 0;
 
   await updateDataSource(dataSourceId, {
     Standort: {
       select: {
-        options: [
-          // Sending all existing options prevents removal during the PATCH.
-          ...existingOptions.map((option) => ({ id: option.id, name: option.name })),
-          ...additions.map((name) => ({ name, color: "blue" })),
-        ],
+        options: reconcileSelectOptions(
+          existingOptions,
+          additions,
+          { retainExisting: true },
+        ),
       },
     },
   });
@@ -167,17 +220,6 @@ function selectedStandortNames(rows) {
   return [...new Set(
     rows.map((row) => row.properties.Standort?.select?.name || "").filter(Boolean),
   )];
-}
-
-function optionForUpdate(existing, desired) {
-  // Notion permits a color when a select option is created, but rejects a
-  // color update for an existing option ID. Preserve existing options exactly
-  // as they are; new options still receive the intended worker-facing color.
-  if (existing?.id) {
-    return { id: existing.id, name: existing.name };
-  }
-
-  return { name: desired.name, color: desired.color };
 }
 
 /**
@@ -195,7 +237,7 @@ function planD3StandortOptions(existingOptions, desiredOptions, rows) {
   }
 
   const existingByName = new Map(existingOptions.map((option) => [option.name, option]));
-  const nextOptions = desiredOptions.map((desired) => optionForUpdate(existingByName.get(desired.name), desired));
+  const nextOptions = reconcileSelectOptions(existingOptions, desiredOptions);
   const removed = existingOptions
     .map((option) => option.name)
     .filter((name) => !desiredNames.has(name));
@@ -236,35 +278,101 @@ async function syncD3StandortOptions(dataSourceId, desiredOptions) {
   return plan;
 }
 
-async function main() {
-  await validateSchema();
-
-  const activeStandorte = await getActiveStandorte();
+/**
+ * Keep worker-specific D3 failures isolated from the shared D7/D8 work. A
+ * failed D3 must still make the workflow red, but it must not prevent relation
+ * repairs for D7 rows that an earlier Daily-sync worker already committed.
+ */
+async function runStandortSynchronization(
+  workers,
+  activeStandorte,
+  operations = {},
+) {
+  const syncWorkerOptions = operations.syncD3StandortOptions || syncD3StandortOptions;
+  const addD7Options = operations.addMissingStandortOptions || addMissingStandortOptions;
+  const syncD7Relations = operations.syncD7StandortRelations || syncD7StandortRelations;
   const standorte = workerStandortNames(activeStandorte);
   const d3Options = workerStandortOptions(activeStandorte);
-  const workers = await readyWorkers();
-  const seenDataSources = new Set();
+  const failures = [];
+  const ownersByDataSource = new Map();
+
+  for (const worker of workers) {
+    if (!worker.d3DataSourceId) continue;
+    const key = normalizedNotionId(worker.d3DataSourceId);
+    const owners = ownersByDataSource.get(key) || [];
+    owners.push(worker.name);
+    ownersByDataSource.set(key, owners);
+  }
+  const duplicateDataSources = new Set(
+    [...ownersByDataSource.entries()]
+      .filter(([, owners]) => owners.length > 1)
+      .map(([dataSourceId]) => dataSourceId),
+  );
+  for (const dataSourceId of duplicateDataSources) {
+    failures.push(
+      `D1 assigns D3 data source ${dataSourceId} to more than one worker: ` +
+        ownersByDataSource.get(dataSourceId).join(", "),
+    );
+  }
 
   console.log(`Distributing ${standorte.length} Standort/work option(s) to ${workers.length} worker(s).`);
 
   for (const worker of workers) {
     if (!worker.d3DataSourceId) {
-      throw new Error(`${worker.name} is Ready but has no D3 Data Source ID in D1`);
+      failures.push(`${worker.name} is Ready but has no D3 Data Source ID in D1`);
+      continue;
     }
-    if (seenDataSources.has(worker.d3DataSourceId)) {
-      throw new Error(`D1 assigns D3 data source ${worker.d3DataSourceId} to more than one worker`);
+    if (duplicateDataSources.has(normalizedNotionId(worker.d3DataSourceId))) continue;
+    let shouldSyncOptions;
+    try {
+      shouldSyncOptions = shouldSyncWorkerD3Options(worker);
+    } catch (failure) {
+      failures.push(`${worker.name}: ${errorMessage(failure)}`);
+      continue;
     }
-    seenDataSources.add(worker.d3DataSourceId);
+    if (!shouldSyncOptions) {
+      console.log(
+        `${worker.name}: D3 options skipped because Month Rollover has a pending archive checkpoint.`,
+      );
+      continue;
+    }
 
-    const result = await syncD3StandortOptions(worker.d3DataSourceId, d3Options);
-    console.log(`${worker.name}: ${result.added.length} added, ${result.removed.length} inactive option(s) removed.`);
+    try {
+      const result = await syncWorkerOptions(worker.d3DataSourceId, d3Options);
+      console.log(
+        `${worker.name}: ${result.added.length} added, ` +
+          `${result.removed.length} inactive option(s) removed.`,
+      );
+    } catch (failure) {
+      failures.push(`${worker.name}: ${errorMessage(failure)}`);
+    }
   }
 
-  const d7Added = await addMissingStandortOptions(D7, standorte);
-  console.log(`D7: ${d7Added} Standort option(s) added.`);
+  try {
+    const d7Added = await addD7Options(D7, standorte);
+    console.log(`D7: ${d7Added} Standort option(s) added.`);
+  } catch (failure) {
+    failures.push(`D7 Standort options: ${errorMessage(failure)}`);
+  }
 
-  const related = await syncD7StandortRelations();
-  console.log(`D7: ${related} Standort relation(s) reconciled.`);
+  try {
+    const related = await syncD7Relations(undefined, { verify: true });
+    console.log(`D7: ${related} Standort relation(s) reconciled.`);
+  } catch (failure) {
+    failures.push(`D7 Standort relations: ${errorMessage(failure)}`);
+  }
+
+  if (failures.length > 0) {
+    throw new Error(`${failures.length} Standort sync failure(s): ${failures.join(" | ")}`);
+  }
+}
+
+async function main() {
+  await validateSchema();
+
+  const activeStandorte = await getActiveStandorte();
+  const workers = await readyWorkers();
+  await runStandortSynchronization(workers, activeStandorte);
 }
 
 if (require.main === module) {
@@ -274,4 +382,12 @@ if (require.main === module) {
   });
 }
 
-module.exports = { planD3StandortOptions, planD7StandortRelations };
+module.exports = {
+  planD3StandortOptions,
+  planD7StandortRelations,
+  runStandortSynchronization,
+  standortOptionAdditions,
+  shouldSyncWorkerD3Options,
+  syncD7StandortRelations,
+  validateStandortRelationSchema,
+};

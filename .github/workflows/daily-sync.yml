@@ -61,15 +61,24 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Upsert D3 worker days into D7 management
+      - id: management_sync
+        name: Sync active and offboarding worker days into D7
         run: node scripts/sync-management.js
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           D1_DATA_SOURCE_ID: ${{ secrets.D1_DATA_SOURCE_ID }}
           D7_DATA_SOURCE_ID: ${{ secrets.D7_DATA_SOURCE_ID }}
       - name: Create completed-sync marker
+        if: >-
+          always() &&
+          (steps.management_sync.outcome == 'success' ||
+          steps.management_sync.outcome == 'failure')
         run: touch "$RUNNER_TEMP/daily-worker-sync-complete"
       - name: Publish completed-sync marker for Standort Sync
+        if: >-
+          always() &&
+          (steps.management_sync.outcome == 'success' ||
+          steps.management_sync.outcome == 'failure')
         uses: actions/upload-artifact@v4
         with:
           name: daily-worker-sync-complete

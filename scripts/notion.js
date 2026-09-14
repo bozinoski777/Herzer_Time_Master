@@ -232,6 +232,14 @@ function archivePage(pageId) {
   });
 }
 
+/** Restore a page previously soft-removed by archivePage. */
+function restorePage(pageId) {
+  return notion(`/pages/${pageId}`, {
+    method: "PATCH",
+    body: { in_trash: false },
+  });
+}
+
 function createPage(parent, properties, extra = {}) {
   return notion("/pages", {
     method: "POST",
@@ -380,6 +388,7 @@ module.exports = {
   requireEnv,
   richText,
   richTextValue,
+  restorePage,
   select,
   selectValue,
   title,

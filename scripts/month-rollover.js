@@ -5,7 +5,7 @@
  * D3 for the current Europe/Berlin calendar month. The process is deliberately
  * ordered as an archive transaction:
  *
- *   D3 rows -> D4 upsert -> D4 verification -> archive D3 source pages
+ *   D3 rows -> D4 + D7 upsert -> both verified -> archive D3 source pages
  *
  * No D3 page is hard-deleted. A retry can always reuse its deterministic D4
  * Sync Key (Worker Key|YYYY-MM-DD) before attempting the next stage.
@@ -15,28 +15,47 @@ const {
   archivePage,
   assertPropertyTypes,
   createPage,
+  databaseIdFromDataSource,
   date,
   errorMessage,
   getDataSource,
+  getPage,
+  getView,
+  listAllViews,
   queryAll,
   requireEnv,
   richText,
   richTextValue,
+  restorePage,
   select,
   title,
   titleValue,
   updateDataSource,
   updatePage,
+  updateView,
 } = require("./notion");
 
 const {
   D1_DATA_SOURCE_ID: D1,
+  D7_DATA_SOURCE_ID: D7,
   D8_DATA_SOURCE_ID: D8,
-} = requireEnv("D1_DATA_SOURCE_ID", "D8_DATA_SOURCE_ID");
+} = requireEnv("D1_DATA_SOURCE_ID", "D7_DATA_SOURCE_ID", "D8_DATA_SOURCE_ID");
 
-const { workerStandortNames } = require("./worker-standort-options");
+const { workerStandortOptions } = require("./worker-standort-options");
+const { reconcileSelectOptions } = require("./select-options");
 const { updateVacationChartForRollover } = require("./frontend-presentation");
 const { HOLIDAY_HOURS, augsburgPaidHolidayName } = require("./augsburg-holidays");
+const {
+  syncWorkerToManagement,
+  validateWorkerD3DataSource,
+  validateManagementDataSource,
+} = require("./management-sync");
+const { syncD7StandortRelations } = require("./sync-standorte");
+const {
+  buildRolloverManifest,
+  manifestSourceEntries,
+  parseRolloverManifest,
+} = require("./rollover-manifest");
 
 const BERLIN_TIME_ZONE = "Europe/Berlin";
 const WEEKDAYS = [
@@ -53,8 +72,11 @@ const ROLLOVER_STATUSES = ["Ready", "Running", "Error"];
 const D1_BASE_SCHEMA = {
   "Vor- und Nachname": "title",
   Active: "checkbox",
+  "Onboarding Status": "select",
   "Worker Key": "rich_text",
+  "D3 Database ID": "rich_text",
   "D3 Data Source ID": "rich_text",
+  "D4 Database ID": "rich_text",
   "D4 Data Source ID": "rich_text",
 };
 
@@ -64,6 +86,7 @@ const D1_ROLLOVER_SCHEMA = {
   "Last Rollover At": "date",
   "Rollover Status": "select",
   "Rollover Error": "rich_text",
+  "Rollover Manifest": "rich_text",
 };
 
 const DAY_SCHEMA = {
@@ -96,7 +119,7 @@ function validIsoDate(value) {
 }
 
 function monthForDate(dateValue) {
-  const value = String(dateValue || "").slice(0, 10);
+  const value = String(dateValue || "");
   if (!validIsoDate(value)) throw new Error(`Invalid or missing calendar date "${dateValue || ""}"`);
   return value.slice(0, 7);
 }
@@ -185,14 +208,6 @@ function cloneDateProperty(sourceDate) {
   };
 }
 
-function optionDefinitions(options) {
-  return options.map((option) => ({
-    ...(option.id ? { id: option.id } : {}),
-    name: option.name,
-    ...(option.color ? { color: option.color } : {}),
-  }));
-}
-
 function uniqueNames(names) {
   return [...new Set(names.map((name) => String(name || "").trim()).filter(Boolean))];
 }
@@ -208,24 +223,75 @@ function workerFromRow(row) {
     name: titleValue(row.properties["Vor- und Nachname"]).trim() || row.id,
     workerKey: rowText(row, "Worker Key"),
     active: Boolean(row.properties.Active?.checkbox),
+    d3DatabaseId: rowText(row, "D3 Database ID"),
     d3DataSourceId: rowText(row, "D3 Data Source ID"),
+    d4DatabaseId: rowText(row, "D4 Database ID"),
     d4DataSourceId: rowText(row, "D4 Data Source ID"),
     vacationChartViewId: rowText(row, "Urlaub Chart View ID"),
     rolloverStatus: row.properties["Rollover Status"]?.select?.name || "",
     currentMonth: rowText(row, "Current Month"),
+    lastArchivedMonth: rowText(row, "Last Archived Month"),
+    rolloverManifest: rowText(row, "Rollover Manifest"),
+    onboardingStatus: row.properties["Onboarding Status"]?.select?.name || "",
   };
-}
-
-function hasCompleteRolloverReferences(worker) {
-  return missingRolloverReferences(worker).length === 0;
 }
 
 function missingRolloverReferences(worker) {
   return [
     ...(worker.workerKey ? [] : ["Worker Key"]),
+    ...(worker.d3DatabaseId ? [] : ["D3 Database ID"]),
     ...(worker.d3DataSourceId ? [] : ["D3 Data Source ID"]),
+    ...(worker.d4DatabaseId ? [] : ["D4 Database ID"]),
     ...(worker.d4DataSourceId ? [] : ["D4 Data Source ID"]),
+    ...(worker.currentMonth ? [] : ["Current Month"]),
   ];
+}
+
+function routingKey(value) {
+  return String(value || "").replaceAll("-", "").toLowerCase();
+}
+
+function validateRolloverRegistry(workers) {
+  const workerKeys = new Map();
+  const databases = new Map();
+  const dataSources = new Map();
+  const register = (owners, rawValue, worker, role, normalize = routingKey) => {
+    const value = normalize(rawValue);
+    if (!value) return;
+    const prior = owners.get(value);
+    if (prior) {
+      throw new Error(
+        `D1 reuses ${role} ${rawValue} for ${worker.name}; it is already ${prior.role} ` +
+          `for ${prior.workerName}. No rollover data was changed`,
+      );
+    }
+    owners.set(value, { workerName: worker.name, role });
+  };
+
+  for (const worker of workers) {
+    register(workerKeys, worker.workerKey, worker, "Worker Key", (value) => value);
+    register(databases, worker.d3DatabaseId, worker, "D3 Database ID");
+    register(databases, worker.d4DatabaseId, worker, "D4 Database ID");
+    register(dataSources, worker.d3DataSourceId, worker, "D3 Data Source ID");
+    register(dataSources, worker.d4DataSourceId, worker, "D4 Data Source ID");
+  }
+}
+
+async function validateWorkerDataSources(worker) {
+  const [d3DataSource, d4DataSource] = await Promise.all([
+    getDataSource(worker.d3DataSourceId),
+    getDataSource(worker.d4DataSourceId),
+  ]);
+  validateWorkerD3DataSource(worker, d3DataSource);
+  assertPropertyTypes(d4DataSource, DAY_SCHEMA);
+  const actualD4DatabaseId = databaseIdFromDataSource(d4DataSource);
+  if (routingKey(actualD4DatabaseId) !== routingKey(worker.d4DatabaseId)) {
+    throw new Error(
+      `${worker.name}: D4 Data Source ID ${worker.d4DataSourceId} belongs to database ` +
+        `${actualD4DatabaseId}, not the stored D4 Database ID ${worker.d4DatabaseId}`,
+    );
+  }
+  return { d3DataSource, d4DataSource };
 }
 
 async function ensureD1RolloverSchema() {
@@ -249,10 +315,11 @@ async function ensureD1RolloverSchema() {
   if (missingStatuses.length > 0) {
     additions["Rollover Status"] = {
       select: {
-        options: [
-          ...optionDefinitions(statusOptions),
-          ...missingStatuses.map((name) => ({ name, color: name === "Error" ? "red" : "blue" })),
-        ],
+        options: reconcileSelectOptions(
+          statusOptions,
+          missingStatuses.map((name) => ({ name, color: name === "Error" ? "red" : "blue" })),
+          { retainExisting: true },
+        ),
       },
     };
   }
@@ -262,6 +329,28 @@ async function ensureD1RolloverSchema() {
     dataSource = await getDataSource(D1);
   }
   assertPropertyTypes(dataSource, { ...D1_BASE_SCHEMA, ...D1_ROLLOVER_SCHEMA });
+
+  const databaseId = databaseIdFromDataSource(dataSource);
+  const manifestPropertyId = dataSource.properties["Rollover Manifest"].id;
+  const references = await listAllViews(databaseId);
+  const views = await Promise.all(references.map((reference) => getView(reference.id)));
+  for (const view of views.filter(
+    (candidate) => routingKey(candidate.data_source_id) === routingKey(D1) && candidate.type === "table",
+  )) {
+    const existing = view.configuration?.properties || [];
+    const seen = existing.some((entry) => entry.property_id === manifestPropertyId);
+    const properties = existing.map((entry) =>
+      entry.property_id === manifestPropertyId ? { ...entry, visible: false } : entry,
+    );
+    if (!seen) properties.push({ property_id: manifestPropertyId, visible: false });
+    await updateView(view.id, {
+      configuration: {
+        ...(view.configuration || {}),
+        type: "table",
+        properties,
+      },
+    });
+  }
 }
 
 async function ensureD4Schema(dataSourceId) {
@@ -285,27 +374,37 @@ async function activeStandorte() {
     property: "Active",
     checkbox: { equals: true },
   });
-  return workerStandortNames(rows.map((row) => titleValue(row.properties.Standort)));
+  return uniqueNames(rows.map((row) => titleValue(row.properties.Standort)));
 }
 
 /** Add values without omitting existing options: D4 is historical and immutable. */
+function historyStandortAdditions(existingOptions, names) {
+  const existingNames = new Set(existingOptions.map((option) => option.name));
+  const desiredByName = new Map(
+    workerStandortOptions(names).map((option) => [option.name, option]),
+  );
+  return uniqueNames(names)
+    .filter((name) => !existingNames.has(name))
+    .map((name) => desiredByName.get(name) || { name, color: "blue" });
+}
+
 async function addSelectOptions(dataSourceId, dataSource, propertyName, names) {
   const property = dataSource.properties?.[propertyName];
   if (!property || property.type !== "select") {
     throw new Error(`Data source ${dataSourceId} needs a Select property named "${propertyName}"`);
   }
   const existing = property.select.options || [];
-  const existingNames = new Set(existing.map((option) => option.name));
-  const additions = uniqueNames(names).filter((name) => !existingNames.has(name));
+  const additions = historyStandortAdditions(existing, names);
   if (additions.length === 0) return 0;
 
   await updateDataSource(dataSourceId, {
     [propertyName]: {
       select: {
-        options: [
-          ...optionDefinitions(existing),
-          ...additions.map((name) => ({ name, color: "blue" })),
-        ],
+        options: reconcileSelectOptions(
+          existing,
+          additions,
+          { retainExisting: true },
+        ),
       },
     },
   });
@@ -319,8 +418,10 @@ async function addSelectOptions(dataSourceId, dataSource, propertyName, names) {
  * function.
  */
 async function rebuildD3StandortOptions(dataSourceId, activeNames, currentRows) {
+  const desiredOptions = workerStandortOptions(activeNames);
+  const desiredNames = desiredOptions.map((option) => option.name);
   const selectedInactive = selectNamesFromRows(currentRows, "Standort").filter(
-    (name) => !activeNames.includes(name),
+    (name) => !desiredNames.includes(name),
   );
   if (selectedInactive.length > 0) {
     throw new Error(
@@ -334,11 +435,10 @@ async function rebuildD3StandortOptions(dataSourceId, activeNames, currentRows) 
   if (!property || property.type !== "select") {
     throw new Error(`Data source ${dataSourceId} needs a Select property named "Standort"`);
   }
-  const existingByName = new Map((property.select.options || []).map((option) => [option.name, option]));
-  const desired = uniqueNames(activeNames).map((name) => {
-    const existing = existingByName.get(name);
-    return existing ? optionDefinitions([existing])[0] : { name, color: "blue" };
-  });
+  const desired = reconcileSelectOptions(
+    property.select.options || [],
+    desiredOptions,
+  );
 
   await updateDataSource(dataSourceId, { Standort: { select: { options: desired } } });
 }
@@ -347,6 +447,12 @@ function validateD3Rows(rows, worker, targetMonth) {
   const dates = new Set();
   const normalized = [];
   for (const row of rows) {
+    const dateProperty = row.properties.Datum?.date;
+    if (dateProperty?.end || dateProperty?.time_zone) {
+      throw new Error(
+        `${worker.name}: D3 page ${row.id} must use one date without a time or date range`,
+      );
+    }
     const sourceDate = dateStart(row);
     const sourceMonth = monthForDate(sourceDate);
     if (dates.has(sourceDate)) {
@@ -399,23 +505,304 @@ function d4RowsByKeyAndDate(rows) {
   return { byKey, byDate };
 }
 
-function archiveValuesMatch(archiveRow, worker, sourceRow) {
-  const expected = archiveProperties(worker, sourceRow);
-  const expectedDate = sourceRow.properties.Datum?.date || null;
-  const actualDate = archiveRow.properties.Datum?.date || null;
+function dayValuesMatch(actualRow, expectedRow) {
+  const expectedDate = expectedRow.properties.Datum?.date || null;
+  const actualDate = actualRow.properties.Datum?.date || null;
   return (
-    rowText(archiveRow, "Sync Key") === expected.syncKey &&
-    titleValue(archiveRow.properties.Wochentag) === titleValue(sourceRow.properties.Wochentag) &&
+    titleValue(actualRow.properties.Wochentag) === titleValue(expectedRow.properties.Wochentag) &&
     (actualDate?.start || "") === (expectedDate?.start || "") &&
     (actualDate?.end || null) === (expectedDate?.end || null) &&
     (actualDate?.time_zone || null) === (expectedDate?.time_zone || null) &&
-    (archiveRow.properties.Stunden?.number ?? null) === (sourceRow.properties.Stunden?.number ?? null) &&
-    (archiveRow.properties.Standort?.select?.name || "") ===
-      (sourceRow.properties.Standort?.select?.name || "")
+    (actualRow.properties.Stunden?.number ?? null) === (expectedRow.properties.Stunden?.number ?? null) &&
+    (actualRow.properties.Standort?.select?.name || "") ===
+      (expectedRow.properties.Standort?.select?.name || "")
   );
 }
 
-async function archiveMonth(worker, sourceEntries) {
+function archiveValuesMatch(archiveRow, worker, sourceRow) {
+  const expected = archiveProperties(worker, sourceRow);
+  return rowText(archiveRow, "Sync Key") === expected.syncKey && dayValuesMatch(archiveRow, sourceRow);
+}
+
+function archiveSourceMonth(sourceEntries, expectedSourceMonth) {
+  const sourceMonth = expectedSourceMonth || sourceEntries[0]?.sourceMonth || "";
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(sourceMonth || "")) {
+    throw new Error(`Invalid D3 source month "${sourceMonth || ""}"`);
+  }
+  if (sourceEntries.some((entry) => entry.sourceMonth !== sourceMonth)) {
+    throw new Error("A D4 archive transaction may contain only one D3 source month");
+  }
+  return sourceMonth;
+}
+
+/**
+ * Each D4 is private to one worker. If either Datum or Sync Key points at the
+ * source month, both must prove the same worker/date; blank or foreign keys are
+ * contamination and fail closed instead of being hidden from exact checks.
+ */
+function scopedD4Identity(row, worker, sourceMonth) {
+  const syncKey = rowText(row, "Sync Key");
+  const prefix = `${worker.workerKey}|`;
+  const rowDate = dateStart(row);
+  const hasWorkerPrefix = syncKey.startsWith(prefix);
+  const keyDate = hasWorkerPrefix ? syncKey.slice(prefix.length) : "";
+  const keyIsValid = hasWorkerPrefix && validIsoDate(keyDate);
+  const keyInSourceMonth = keyIsValid && keyDate.slice(0, 7) === sourceMonth;
+  const rowInSourceMonth = validIsoDate(rowDate) && rowDate.slice(0, 7) === sourceMonth;
+
+  if (hasWorkerPrefix && !keyIsValid) {
+    throw new Error(
+      `${worker.name}: D4 row ${row.id} has an invalid Sync Key; refusing automatic cleanup`,
+    );
+  }
+  if (keyInSourceMonth || rowInSourceMonth) {
+    if (!keyInSourceMonth || !rowInSourceMonth || keyDate !== rowDate) {
+      throw new Error(
+        `${worker.name}: D4 row ${row.id} has conflicting or foreign Sync Key/Datum ownership; ` +
+          "refusing automatic cleanup",
+      );
+    }
+    return { row, syncKey, keyDate, rowDate };
+  }
+  if (hasWorkerPrefix && keyDate !== rowDate) {
+    throw new Error(
+      `${worker.name}: D4 row ${row.id} has conflicting Sync Key/Datum ownership; ` +
+        "refusing automatic cleanup",
+    );
+  }
+  return null;
+}
+
+/**
+ * Find only stale rows that can be proven to belong to the worker/month being
+ * retried. This repairs a failed rollover after a D3 date edit or deletion
+ * without touching another worker's or another month's archive history.
+ */
+function staleD4Rows(worker, sourceMonth, sourceEntries, archiveRows) {
+  archiveSourceMonth(sourceEntries, sourceMonth);
+  const expectedPairs = new Set(
+    sourceEntries.map((entry) => `${worker.workerKey}|${entry.sourceDate}\u0000${entry.sourceDate}`),
+  );
+
+  return archiveRows
+    .map((row) => scopedD4Identity(row, worker, sourceMonth))
+    .filter(Boolean)
+    .filter((identity) => !expectedPairs.has(`${identity.syncKey}\u0000${identity.rowDate}`))
+    .map((identity) => identity.row);
+}
+
+/** Exact D4 barrier for the one worker/month currently being archived. */
+function verifyD4ExactMonth(worker, sourceMonth, sourceEntries, archiveRows) {
+  archiveSourceMonth(sourceEntries, sourceMonth);
+  const scopedRows = archiveRows
+    .map((row) => scopedD4Identity(row, worker, sourceMonth))
+    .filter(Boolean)
+    .map((identity) => identity.row);
+  const expectedKeys = new Set(
+    sourceEntries.map((entry) => `${worker.workerKey}|${entry.sourceDate}`),
+  );
+
+  if (expectedKeys.size !== sourceEntries.length) {
+    throw new Error(`${worker.name}: D3 has duplicate dates in ${sourceMonth}`);
+  }
+  if (scopedRows.length !== sourceEntries.length) {
+    throw new Error(
+      `${worker.name}: D4 exact-set verification failed for ${sourceMonth}; ` +
+        `expected ${sourceEntries.length} row(s), found ${scopedRows.length}. D3 remains unchanged`,
+    );
+  }
+
+  const verifiedIndex = d4RowsByKeyAndDate(scopedRows);
+  for (const entry of sourceEntries) {
+    const expectedKey = `${worker.workerKey}|${entry.sourceDate}`;
+    const archiveRow = verifiedIndex.byKey.get(expectedKey);
+    if (!archiveRow || !archiveValuesMatch(archiveRow, worker, entry.row)) {
+      throw new Error(`${worker.name}: D4 verification failed for ${expectedKey}; D3 remains unchanged`);
+    }
+  }
+  return true;
+}
+
+function sourceSnapshotMatches(sourceEntries, freshRows, expectedSourceMonth) {
+  const sourceMonth = archiveSourceMonth(sourceEntries, expectedSourceMonth);
+  const expectedIds = new Set(sourceEntries.map((entry) => entry.row.id));
+  const freshMonthRows = freshRows.filter((row) => monthForDate(dateStart(row)) === sourceMonth);
+  if (freshMonthRows.length !== expectedIds.size) return false;
+  const freshById = new Map(freshRows.map((row) => [row.id, row]));
+  return sourceEntries.every((entry) => {
+    const fresh = freshById.get(entry.row.id);
+    return Boolean(fresh && dayValuesMatch(fresh, entry.row));
+  });
+}
+
+function completedSourceMonths(
+  entries,
+  currentMonth,
+  targetMonth,
+  workerName = "Worker",
+  lastArchivedMonth = "",
+) {
+  if (lastArchivedMonth && !/^\d{4}-(0[1-9]|1[0-2])$/.test(lastArchivedMonth)) {
+    throw new Error(`${workerName}: D1 Last Archived Month is invalid: "${lastArchivedMonth}"`);
+  }
+  const oldMonthSet = new Set(
+    entries.filter((entry) => entry.sourceMonth < targetMonth).map((entry) => entry.sourceMonth),
+  );
+  if (currentMonth) {
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(currentMonth)) {
+      throw new Error(`${workerName}: D1 Current Month is invalid: "${currentMonth}"`);
+    }
+    if (currentMonth > targetMonth) {
+      throw new Error(
+        `${workerName}: D1 Current Month ${currentMonth} is later than rollover target ${targetMonth}`,
+      );
+    }
+    if (currentMonth < targetMonth) oldMonthSet.add(currentMonth);
+  }
+  return [...oldMonthSet]
+    .filter((month) => !lastArchivedMonth || month > lastArchivedMonth)
+    .sort();
+}
+
+async function reconcileWorkerD8Relations(worker) {
+  const related = await syncD7StandortRelations(
+    { property: "Worker Key", rich_text: { equals: worker.workerKey } },
+    { verify: true },
+  );
+  console.log(`${worker.name}: D8 relation barrier verified (${related} D7 relation(s) updated).`);
+}
+
+async function verifyManifestBarriers(worker, manifest) {
+  const sourceEntries = manifestSourceEntries(manifest);
+  await ensureD4Schema(worker.d4DataSourceId);
+  verifyD4ExactMonth(
+    worker,
+    manifest.sourceMonth,
+    sourceEntries,
+    await queryAll(worker.d4DataSourceId),
+  );
+  const d7Result = await syncWorkerToManagement(
+    { ...worker, currentMonth: manifest.sourceMonth },
+    sourceEntries.map((entry) => entry.row),
+    D7,
+    { reconcileMissing: true, verify: true, fullScan: true },
+  );
+  console.log(
+    `${worker.name}: resumed D7 barrier (${d7Result.created} created, ` +
+      `${d7Result.updated} updated, ${d7Result.archived} stale removed, ` +
+      `${d7Result.unchanged} unchanged).`,
+  );
+  await reconcileWorkerD8Relations(worker);
+  return sourceEntries;
+}
+
+async function rollbackManifestSourcePages(worker, sourceEntries, reason) {
+  const failures = [];
+  for (const entry of sourceEntries) {
+    try {
+      const page = await getPage(entry.row.id);
+      if (page.in_trash) await restorePage(entry.row.id);
+    } catch (failure) {
+      failures.push(`${entry.row.id}: ${errorMessage(failure)}`);
+    }
+  }
+  if (failures.length > 0) {
+    throw new Error(
+      `${reason} Automatic source restore was incomplete (${failures.join(" | ")}); ` +
+        "the Rollover Manifest was kept for a safe retry.",
+    );
+  }
+  await setWorkerState(worker, { "Rollover Manifest": richText("") });
+  throw new Error(
+    `${reason} Any source pages already archived by this transaction were restored; run rollover again.`,
+  );
+}
+
+async function archiveManifestSourcePages(worker, manifest, targetMonth) {
+  const sourceEntries = manifestSourceEntries(manifest);
+  const expectedById = new Map(sourceEntries.map((entry) => [entry.row.id, entry]));
+  const visibleRows = await queryAll(worker.d3DataSourceId);
+  const visibleEntries = validateD3Rows(visibleRows, worker, targetMonth)
+    .filter((entry) => entry.sourceMonth === manifest.sourceMonth);
+  const visibleById = new Map(visibleEntries.map((entry) => [entry.row.id, entry]));
+
+  let driftReason = "";
+  for (const visible of visibleEntries) {
+    const expected = expectedById.get(visible.row.id);
+    if (!expected || !dayValuesMatch(visible.row, expected.row)) {
+      driftReason = `${worker.name}: D3 changed after its ${manifest.sourceMonth} archive checkpoint.`;
+      break;
+    }
+  }
+
+  if (!driftReason) {
+    for (const entry of sourceEntries) {
+      const page = await getPage(entry.row.id);
+      assertManifestPageParent(worker, page);
+      if (!dayValuesMatch(page, entry.row)) {
+        driftReason = `${worker.name}: D3 page ${entry.row.id} changed after its archive checkpoint.`;
+        break;
+      }
+      if (page.in_trash === visibleById.has(entry.row.id)) {
+        driftReason = `${worker.name}: D3 page ${entry.row.id} has an inconsistent archive state.`;
+        break;
+      }
+    }
+  }
+
+  if (driftReason) {
+    await rollbackManifestSourcePages(worker, sourceEntries, driftReason);
+  }
+
+  for (const entry of sourceEntries) {
+    const lastRead = await getPage(entry.row.id);
+    assertManifestPageParent(worker, lastRead);
+    if (lastRead.in_trash) continue;
+    if (!dayValuesMatch(lastRead, entry.row)) {
+      await rollbackManifestSourcePages(
+        worker,
+        sourceEntries,
+        `${worker.name}: D3 changed immediately before archival for ${entry.sourceDate}.`,
+      );
+    }
+    await archivePage(entry.row.id);
+    const archivedRead = await getPage(entry.row.id);
+    assertManifestPageParent(worker, archivedRead);
+    if (!archivedRead.in_trash || !dayValuesMatch(archivedRead, entry.row)) {
+      await rollbackManifestSourcePages(
+        worker,
+        sourceEntries,
+        `${worker.name}: D3 changed during archival for ${entry.sourceDate}.`,
+      );
+    }
+  }
+
+  const remainingRows = await queryAll(worker.d3DataSourceId);
+  const remainingEntries = validateD3Rows(remainingRows, worker, targetMonth);
+  if (remainingEntries.some((entry) => entry.sourceMonth === manifest.sourceMonth)) {
+    await rollbackManifestSourcePages(
+      worker,
+      sourceEntries,
+      `${worker.name}: D3 gained or retained a ${manifest.sourceMonth} row during archival.`,
+    );
+  }
+}
+
+function assertManifestPageParent(worker, page) {
+  const parentId = page.parent?.data_source_id || page.parent?.database_id || "";
+  const expectedParents = new Set(
+    [worker.d3DataSourceId, worker.d3DatabaseId].map(routingKey).filter(Boolean),
+  );
+  if (!parentId || !expectedParents.has(routingKey(parentId))) {
+    throw new Error(
+      `${worker.name}: checkpoint page ${page.id} no longer belongs to the recorded D3; ` +
+        "refusing rollover resume",
+    );
+  }
+}
+
+async function archiveMonth(worker, sourceMonth, sourceEntries, targetMonth) {
+  archiveSourceMonth(sourceEntries, sourceMonth);
   const d4DataSource = await ensureD4Schema(worker.d4DataSourceId);
   // D4 must be able to retain all historical values before a page write.
   await addSelectOptions(
@@ -425,7 +812,15 @@ async function archiveMonth(worker, sourceEntries) {
     selectNamesFromRows(sourceEntries.map((entry) => entry.row), "Standort"),
   );
   const initialArchiveRows = await queryAll(worker.d4DataSourceId);
-  const index = d4RowsByKeyAndDate(initialArchiveRows);
+  const staleRows = staleD4Rows(worker, sourceMonth, sourceEntries, initialArchiveRows);
+  for (const staleRow of staleRows) await archivePage(staleRow.id);
+  if (staleRows.length > 0) {
+    console.log(
+      `${worker.name}: removed ${staleRows.length} stale ${sourceMonth} D4 row(s) from a prior rollover attempt.`,
+    );
+  }
+  const staleIds = new Set(staleRows.map((row) => row.id));
+  const index = d4RowsByKeyAndDate(initialArchiveRows.filter((row) => !staleIds.has(row.id)));
 
   for (const entry of sourceEntries) {
     const built = archiveProperties(worker, entry.row);
@@ -460,26 +855,72 @@ async function archiveMonth(worker, sourceEntries) {
   }
 
   // Fresh query is the archive barrier. Never touch D3 before every source
-  // page has exactly one verified, value-identical D4 row.
+  // page has exactly one verified, value-identical D4 row and no stale row
+  // remains for this worker/source month.
   const verifiedRows = await queryAll(worker.d4DataSourceId);
-  const verifiedIndex = d4RowsByKeyAndDate(verifiedRows);
-  for (const entry of sourceEntries) {
-    const expectedKey = `${worker.workerKey}|${entry.sourceDate}`;
-    const archiveRow = verifiedIndex.byKey.get(expectedKey);
-    if (!archiveRow || !archiveValuesMatch(archiveRow, worker, entry.row)) {
-      throw new Error(`${worker.name}: D4 verification failed for ${expectedKey}; D3 remains unchanged`);
-    }
+  verifyD4ExactMonth(worker, sourceMonth, sourceEntries, verifiedRows);
+
+  // D7 drives management reporting and D8 rollups. It is part of the same
+  // safety barrier as D4 so late month-end edits cannot disappear when D3 is
+  // archived. The shared upsert matches Source Page ID before the date key.
+  const d7Result = await syncWorkerToManagement(
+    { ...worker, currentMonth: sourceMonth },
+    sourceEntries.map((entry) => entry.row),
+    D7,
+    { reconcileMissing: true, verify: true, fullScan: true },
+  );
+  console.log(
+    `${worker.name}: D7 barrier verified (${d7Result.created} created, ` +
+      `${d7Result.updated} updated, ${d7Result.archived} stale removed, ` +
+      `${d7Result.unchanged} unchanged).`,
+  );
+  await reconcileWorkerD8Relations(worker);
+
+  // A worker can still edit Notion while the workflow is running. Re-read D3
+  // immediately before archival and abort if the verified snapshot drifted.
+  const freshSourceRows = await queryAll(worker.d3DataSourceId);
+  if (!sourceSnapshotMatches(sourceEntries, freshSourceRows, sourceMonth)) {
+    throw new Error(
+      `${worker.name}: D3 changed during rollover; ` +
+        "the verified D4/D7 snapshot was not archived. Run rollover again.",
+    );
   }
 
-  for (const entry of sourceEntries) {
-    await archivePage(entry.row.id);
+  // Persist the exact verified source set before the first D3 page is moved to
+  // trash. If the runner stops halfway through, a retry resumes this manifest
+  // instead of mistaking already-archived pages for worker deletions.
+  const manifest = buildRolloverManifest(worker, sourceMonth, sourceEntries);
+  await setWorkerState(worker, {
+    "Rollover Status": select("Running"),
+    "Rollover Error": richText(""),
+    "Rollover Manifest": richText(JSON.stringify(manifest)),
+  });
+  await archiveManifestSourcePages(worker, manifest, targetMonth);
+
+  // Re-run all management barriers after D3 is in trash. This closes the
+  // final gap before the durable checkpoint is cleared: any D4/D7/D8 drift or
+  // partial API result restores the source pages and leaves history retryable.
+  try {
+    await verifyManifestBarriers(worker, manifest);
+  } catch (failure) {
+    await rollbackManifestSourcePages(
+      worker,
+      manifestSourceEntries(manifest),
+      `${worker.name}: post-archive D4/D7/D8 verification failed: ${errorMessage(failure)}.`,
+    );
   }
 
   const remainingD3Rows = await queryAll(worker.d3DataSourceId);
-  const remainingOld = remainingD3Rows.filter((row) => monthForDate(dateStart(row)) < sourceEntries[0].sourceMonth);
+  const remainingCompleted = remainingD3Rows.filter(
+    (row) => monthForDate(dateStart(row)) <= sourceMonth,
+  );
   const stillVisible = remainingD3Rows.filter((row) => sourceEntries.some((entry) => entry.row.id === row.id));
-  if (stillVisible.length > 0 || remainingOld.length > 0) {
-    throw new Error(`${worker.name}: D3 archive verification failed after D4 was verified`);
+  if (stillVisible.length > 0 || remainingCompleted.length > 0) {
+    await rollbackManifestSourcePages(
+      worker,
+      manifestSourceEntries(manifest),
+      `${worker.name}: D3 archive verification found a retained or newly-added completed row.`,
+    );
   }
 }
 
@@ -519,21 +960,68 @@ async function rolloverWorker(worker, run) {
     "Rollover Error": richText(""),
   });
 
-  const d3DataSource = await getDataSource(worker.d3DataSourceId);
-  assertPropertyTypes(d3DataSource, DAY_SCHEMA);
+  let lastArchivedMonth = worker.lastArchivedMonth;
+  let resumedManifest = false;
+  const pendingManifest = parseRolloverManifest(worker.rolloverManifest, worker);
+  if (pendingManifest) {
+    if (pendingManifest.sourceMonth >= run.targetMonth) {
+      throw new Error(
+        `${worker.name}: pending Rollover Manifest month ${pendingManifest.sourceMonth} ` +
+          `is not before target ${run.targetMonth}`,
+      );
+    }
+    if (lastArchivedMonth && pendingManifest.sourceMonth <= lastArchivedMonth) {
+      throw new Error(
+        `${worker.name}: Rollover Manifest ${pendingManifest.sourceMonth} conflicts with ` +
+          `Last Archived Month ${lastArchivedMonth}`,
+      );
+    }
+    console.log(
+      `${worker.name}: resuming verified ${pendingManifest.sourceMonth} archive checkpoint ` +
+        `(${pendingManifest.days.length} D3 row(s)).`,
+    );
+    await verifyManifestBarriers(worker, pendingManifest);
+    await archiveManifestSourcePages(worker, pendingManifest, run.targetMonth);
+    try {
+      await verifyManifestBarriers(worker, pendingManifest);
+    } catch (failure) {
+      await rollbackManifestSourcePages(
+        worker,
+        manifestSourceEntries(pendingManifest),
+        `${worker.name}: post-archive D4/D7/D8 verification failed: ${errorMessage(failure)}.`,
+      );
+    }
+    lastArchivedMonth = pendingManifest.sourceMonth;
+    resumedManifest = true;
+    await setWorkerState(worker, {
+      "Rollover Status": select("Running"),
+      "Current Month": richText(run.targetMonth),
+      "Last Archived Month": richText(lastArchivedMonth),
+      "Rollover Manifest": richText(""),
+      "Rollover Error": richText(""),
+    });
+  }
+
   let d3Rows = await queryAll(worker.d3DataSourceId);
   const entries = validateD3Rows(d3Rows, worker, run.targetMonth);
-  const oldMonths = [...new Set(entries.filter((entry) => entry.sourceMonth < run.targetMonth).map((entry) => entry.sourceMonth))].sort();
+  const oldMonths = completedSourceMonths(
+    entries,
+    worker.currentMonth,
+    run.targetMonth,
+    worker.name,
+    lastArchivedMonth,
+  );
 
-  let lastArchivedMonth = "";
   for (const sourceMonth of oldMonths) {
     const sourceEntries = entries.filter((entry) => entry.sourceMonth === sourceMonth);
     console.log(`${worker.name}: archiving ${sourceEntries.length} D3 row(s) for ${sourceMonth}.`);
-    await archiveMonth(worker, sourceEntries);
+    await archiveMonth(worker, sourceMonth, sourceEntries, run.targetMonth);
     lastArchivedMonth = sourceMonth;
     await setWorkerState(worker, {
       "Rollover Status": select("Running"),
+      "Current Month": richText(run.targetMonth),
       "Last Archived Month": richText(sourceMonth),
+      "Rollover Manifest": richText(""),
       "Rollover Error": richText(""),
     });
   }
@@ -546,7 +1034,11 @@ async function rolloverWorker(worker, run) {
 
   // Rebuild only after an archive stage (or resume an interrupted rollover).
   // Normal daily checks leave a current D3 schema untouched.
-  if (oldMonths.length > 0 || (worker.rolloverStatus === "Running" && worker.currentMonth !== run.targetMonth)) {
+  if (
+    resumedManifest ||
+    oldMonths.length > 0 ||
+    (worker.rolloverStatus === "Running" && worker.currentMonth !== run.targetMonth)
+  ) {
     await rebuildD3StandortOptions(
       worker.d3DataSourceId,
       await activeStandorte(),
@@ -557,7 +1049,7 @@ async function rolloverWorker(worker, run) {
   const created = worker.active
     ? await ensureCurrentMonthRows(worker, run.targetMonth, remaining.map((entry) => entry.row))
     : 0;
-  const changed = oldMonths.length > 0 || created > 0;
+  const changed = resumedManifest || oldMonths.length > 0 || created > 0;
 
   // A chart is presentation only: a manually deleted/stale chart reference
   // must not block a completed archive transaction or D3 month generation.
@@ -580,6 +1072,7 @@ async function rolloverWorker(worker, run) {
     ...(changed ? { "Last Rollover At": date(new Date().toISOString()) } : {}),
     "Rollover Status": select("Ready"),
     "Rollover Error": richText(""),
+    "Rollover Manifest": richText(""),
   });
   console.log(
     `${worker.name}: ${oldMonths.length ? `${oldMonths.join(", ")} archived; ` : ""}` +
@@ -589,27 +1082,74 @@ async function rolloverWorker(worker, run) {
 
 function selectWorkers(rows, run) {
   const allWorkers = rows.map(workerFromRow);
-  const workers = allWorkers.filter(hasCompleteRolloverReferences);
-  if (!run.targetWorker) return workers;
+  const readyWorkers = allWorkers.filter((worker) => worker.onboardingStatus === "Ready");
+  if (!run.targetWorker) return readyWorkers;
 
   const matches = allWorkers.filter(
     (worker) => worker.workerKey === run.targetWorker || worker.name === run.targetWorker,
   );
   if (matches.length !== 1) {
-    const candidates = workers.map((worker) => worker.name).join(", ") || "(none)";
+    const candidates = readyWorkers.map((worker) => worker.name).join(", ") || "(none)";
     throw new Error(
       `ROLLOVER_TARGET_WORKER must match exactly one worker key or name; found ${matches.length} matches. ` +
         `Valid rollover candidates: ${candidates}.`,
     );
   }
-  const missing = missingRolloverReferences(matches[0]);
-  if (missing.length > 0) {
+  if (matches[0].onboardingStatus !== "Ready") {
     throw new Error(
-      `${matches[0].name} is not a safe rollover target because D1 is missing: ${missing.join(", ")}. ` +
-        "Complete onboarding/migration first; no D3 or D4 data was changed.",
+      `${matches[0].name} is not a safe rollover target because Onboarding Status is ` +
+        `${matches[0].onboardingStatus || "blank"}, not Ready. No D3 or D4 data was changed.`,
     );
   }
   return matches;
+}
+
+async function preflightWorkers(workers, run) {
+  const failures = [];
+
+  for (const worker of workers) {
+    try {
+      const missing = missingRolloverReferences(worker);
+      if (missing.length > 0) {
+        throw new Error(`${worker.name} is Ready but D1 is missing: ${missing.join(", ")}`);
+      }
+      completedSourceMonths(
+        [],
+        worker.currentMonth,
+        run.targetMonth,
+        worker.name,
+        worker.lastArchivedMonth,
+      );
+      const manifest = parseRolloverManifest(worker.rolloverManifest, worker);
+      if (manifest && manifest.sourceMonth >= run.targetMonth) {
+        throw new Error(
+          `${worker.name}: Rollover Manifest month ${manifest.sourceMonth} is not before ` +
+            `target ${run.targetMonth}`,
+        );
+      }
+      await validateWorkerDataSources(worker);
+    } catch (failure) {
+      failures.push({ worker, failure });
+    }
+  }
+
+  if (failures.length === 0) return;
+  const messages = [];
+  for (const { worker, failure } of failures) {
+    const message = errorMessage(failure);
+    try {
+      await markWorkerError(worker, failure);
+      messages.push(`${worker.name}: ${message}`);
+    } catch (markFailure) {
+      messages.push(
+        `${worker.name}: ${message}; could not mark D1 Error: ${errorMessage(markFailure)}`,
+      );
+    }
+  }
+  throw new Error(
+    `${failures.length} rollover preflight failure(s); no D3/D4/D7 rows were changed: ` +
+      messages.join(" | "),
+  );
 }
 
 async function main() {
@@ -624,19 +1164,20 @@ async function main() {
     return;
   }
   await ensureD1RolloverSchema();
+  validateManagementDataSource(await getDataSource(D7));
   const rows = await queryAll(D1);
+  // Validate the complete registry before narrowing a one-worker simulation.
+  // A target must never reuse a D3/D4 store owned by an out-of-scope or
+  // not-yet-Ready row, including cross-role D3↔D4 reuse.
+  validateRolloverRegistry(rows.map(workerFromRow));
   const workers = selectWorkers(rows, run);
+  await preflightWorkers(workers, run);
   console.log(
     `${run.simulation ? "SIMULATION" : "LIVE Berlin calendar"}: ${run.targetMonth}; ${workers.length} worker(s) in scope.`,
   );
 
-  const seenWorkerKeys = new Set();
   const failures = [];
   for (const worker of workers) {
-    if (seenWorkerKeys.has(worker.workerKey)) {
-      throw new Error(`D1 has more than one valid worker with Worker Key ${worker.workerKey}`);
-    }
-    seenWorkerKeys.add(worker.workerKey);
     try {
       await rolloverWorker(worker, run);
     } catch (failure) {
@@ -665,8 +1206,17 @@ if (require.main === module) {
 module.exports = {
   archiveProperties,
   berlinDateParts,
+  buildRolloverManifest,
+  completedSourceMonths,
+  historyStandortAdditions,
+  manifestSourceEntries,
   monthDays,
   monthForDate,
+  parseRolloverManifest,
   resolveRunConfiguration,
+  sourceSnapshotMatches,
+  staleD4Rows,
+  validateRolloverRegistry,
   validIsoDate,
+  verifyD4ExactMonth,
 };

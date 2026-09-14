@@ -81,7 +81,7 @@ async function main() {
     ),
     textBlock(
       "bulleted_list_item",
-      "It verifies every expected D4 archive row before touching D3. If verification fails, D3 remains unchanged and the worker receives a visible D1 rollover error.",
+      "It verifies every expected D4 archive row, upserts and verifies the same final values in management D7, and verifies the matching D8 relations. The hidden checkpoint is bound to the exact D3/D4 routing. After D3 is soft-archived, all three barriers are verified again; a failed final barrier restores the source pages and leaves a visible D1 rollover error.",
     ),
     textBlock(
       "bulleted_list_item",
@@ -93,11 +93,11 @@ async function main() {
     ),
     textBlock(
       "bulleted_list_item",
-      "D7 remains the all-time management history. Rollover never deletes D7 rows; normal daily sync continues to update current D3 days.",
+      "D7 remains the all-time management history. Rollover secures final completed-month values itself, while Daily sync uses Source Page ID to reconcile date changes and current-month deletions.",
     ),
     textBlock(
       "paragraph",
-      "Errors and retries: D1 shows Current Month, Last Archived Month, Last Rollover At, Rollover Status, and Rollover Error. A retry reuses D4 Sync Keys and creates only missing D3 days, so it does not duplicate archive or current-month records.",
+      "Errors and retries: D1 shows Current Month, Last Archived Month, Last Rollover At, Rollover Status, and Rollover Error. A retry reuses D4 Sync Keys and D7 Source Page IDs, then creates only missing D3 days, so it does not duplicate records.",
     ),
   ]);
   console.log(`Added "${HEADING}" to the verified Control & Automation page.`);
