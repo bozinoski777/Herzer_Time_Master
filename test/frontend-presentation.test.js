@@ -28,6 +28,7 @@ function dataSource() {
       "Worker Key": { id: "worker-key", name: "Worker Key", type: "rich_text" },
       "D1 Record ID": { id: "d1-id", name: "D1 Record ID", type: "rich_text" },
       "Vor- und Nachname": { id: "employee", name: "Vor- und Nachname", type: "title" },
+      Jahresurlaub: { id: "annual-vacation", name: "Jahresurlaub", type: "number" },
     },
   };
 }
@@ -109,5 +110,9 @@ test("management view retains existing settings while hiding frontend internals"
   assert.equal(
     properties.find((property) => property.property_id === "d1-id").visible,
     false,
+  );
+  assert.equal(
+    properties.find((property) => property.property_id === "annual-vacation").visible,
+    true,
   );
 });

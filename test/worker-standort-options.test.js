@@ -14,6 +14,7 @@ process.env.D8_DATA_SOURCE_ID = "test-d8";
 process.env.EMPLOYEE_FRONTENDS_DATA_SOURCE_ID = "test-frontends";
 
 const {
+  annualVacationValue,
   dayDatabaseProperties,
   executionMode,
   frontendProperties,
@@ -48,6 +49,25 @@ test("onboarding workflow modes keep preflight separate from provisioning", () =
   );
 });
 
+test("annual vacation must be entered manually as a non-negative number before onboarding", () => {
+  assert.equal(
+    annualVacationValue({ id: "worker-1", properties: { Jahresurlaub: { number: 30 } } }),
+    30,
+  );
+  assert.equal(
+    annualVacationValue({ id: "worker-2", properties: { Jahresurlaub: { number: 0 } } }),
+    0,
+  );
+  assert.throws(
+    () => annualVacationValue({ id: "worker-3", properties: { Jahresurlaub: { number: null } } }),
+    /manually entered Jahresurlaub/,
+  );
+  assert.throws(
+    () => annualVacationValue({ id: "worker-4", properties: { Jahresurlaub: { number: -1 } } }),
+    /invalid Jahresurlaub/,
+  );
+});
+
 test("new worker D3/D4 schemas use one Standort select and no Tagtyp property", () => {
   const d3 = dayDatabaseProperties(["Berlin"]);
   const d4 = dayDatabaseProperties(["Berlin"], true);
@@ -62,9 +82,10 @@ test("new worker D3/D4 schemas use one Standort select and no Tagtyp property", 
   assert.ok(d4.Monat);
 });
 
-test("new worker frontends expose email and include the manual invite checklist", () => {
-  const properties = frontendProperties("Tea Smea", "tea@example.com", "wrk_1", "d1_1");
+test("new worker frontends expose email and annual vacation and include the manual invite checklist", () => {
+  const properties = frontendProperties("Tea Smea", "tea@example.com", "wrk_1", "d1_1", 30);
   assert.deepEqual(properties.Email, { email: "tea@example.com" });
+  assert.deepEqual(properties.Jahresurlaub, { number: 30 });
   assert.equal(properties["Worker Key"].rich_text[0].text.content, "wrk_1");
 
   const checklist = manualOnboardingChecklistBlocks();

@@ -70,6 +70,7 @@ const WEEKDAYS = [
 const { HOLIDAY_HOURS, augsburgPaidHolidayName } = require("./augsburg-holidays");
 const WORKER_FRONTEND_ICON = { type: "emoji", emoji: "👤" };
 const VACATION_CHART_VIEW_ID_PROPERTY = "Urlaub Chart View ID";
+const ANNUAL_VACATION_PROPERTY = "Jahresurlaub";
 const MANUAL_ONBOARDING_CHECKLIST_ITEMS = [
   {
     text: "In Aktueller Monat die Vorlage Teil-Tag anlegen und Datum auf das aktuelle Datum setzen.",
@@ -94,7 +95,7 @@ const MANUAL_ONBOARDING_CHECKLIST_ITEMS = [
   },
 ];
 
-const D1_SCHEMA = {
+const D1_CORE_SCHEMA = {
   "Vor- und Nachname": "title",
   Email: "email",
   Active: "checkbox",
@@ -112,13 +113,18 @@ const D1_SCHEMA = {
   "D4 Database ID": "rich_text",
   "D4 Data Source ID": "rich_text",
 };
+const D1_SCHEMA = { ...D1_CORE_SCHEMA, [ANNUAL_VACATION_PROPERTY]: "number" };
 
 const FRONTENDS_CORE_SCHEMA = {
   "Vor- und Nachname": "title",
   "Worker Key": "rich_text",
   "D1 Record ID": "rich_text",
 };
-const FRONTENDS_SCHEMA = { ...FRONTENDS_CORE_SCHEMA, Email: "email" };
+const FRONTENDS_SCHEMA = {
+  ...FRONTENDS_CORE_SCHEMA,
+  Email: "email",
+  [ANNUAL_VACATION_PROPERTY]: "number",
+};
 
 let employeeFrontendsDataSourceId;
 let legacyPocPageId;
@@ -163,6 +169,17 @@ function emailValue(row) {
   return row.properties.Email?.email?.trim() || "";
 }
 
+function annualVacationValue(row) {
+  const value = row.properties[ANNUAL_VACATION_PROPERTY]?.number;
+  if (value === null || value === undefined) {
+    throw new Error(`D1 row ${row.id} needs a manually entered ${ANNUAL_VACATION_PROPERTY} value before onboarding`);
+  }
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`D1 row ${row.id} has an invalid ${ANNUAL_VACATION_PROPERTY} value; use a non-negative number`);
+  }
+  return value;
+}
+
 function frontendUrl(page) {
   return page.url || `https://www.notion.so/${page.id.replaceAll("-", "")}`;
 }
@@ -171,10 +188,11 @@ async function updateD1(rowId, properties) {
   return updatePage(rowId, properties);
 }
 
-function frontendProperties(name, email, key, d1RecordId) {
+function frontendProperties(name, email, key, d1RecordId, annualVacation) {
   return {
     "Vor- und Nachname": title(name),
     Email: { email: email || null },
+    [ANNUAL_VACATION_PROPERTY]: { number: annualVacation },
     "Worker Key": richText(key),
     "D1 Record ID": richText(d1RecordId),
   };
@@ -286,11 +304,20 @@ async function frontendsDataSourceId() {
   let frontends = await getDataSource(employeeFrontendsDataSourceId);
   assertPropertyTypes(frontends, FRONTENDS_CORE_SCHEMA);
   const email = frontends.properties?.Email;
+  const annualVacation = frontends.properties?.[ANNUAL_VACATION_PROPERTY];
   if (email && email.type !== "email") {
     throw new Error(`Employee Front-ends property "Email" is ${email.type}, expected email`);
   }
-  if (!email) {
-    await updateDataSource(employeeFrontendsDataSourceId, { Email: { email: {} } });
+  if (annualVacation && annualVacation.type !== "number") {
+    throw new Error(
+      `Employee Front-ends property "${ANNUAL_VACATION_PROPERTY}" is ${annualVacation.type}, expected number`,
+    );
+  }
+  const additions = {};
+  if (!email) additions.Email = { email: {} };
+  if (!annualVacation) additions[ANNUAL_VACATION_PROPERTY] = { number: { format: "number" } };
+  if (Object.keys(additions).length > 0) {
+    await updateDataSource(employeeFrontendsDataSourceId, additions);
     frontends = await getDataSource(employeeFrontendsDataSourceId);
   }
   assertPropertyTypes(frontends, FRONTENDS_SCHEMA);
@@ -299,13 +326,20 @@ async function frontendsDataSourceId() {
 
 async function validateSchema() {
   let d1 = await getDataSource(D1);
-  assertPropertyTypes(d1, D1_SCHEMA);
+  assertPropertyTypes(d1, D1_CORE_SCHEMA);
   const chartViewId = d1.properties?.[VACATION_CHART_VIEW_ID_PROPERTY];
+  const annualVacation = d1.properties?.[ANNUAL_VACATION_PROPERTY];
   if (chartViewId && chartViewId.type !== "rich_text") {
     throw new Error(`D1 property "${VACATION_CHART_VIEW_ID_PROPERTY}" is ${chartViewId.type}, expected rich_text`);
   }
-  if (!chartViewId) {
-    await updateDataSource(D1, { [VACATION_CHART_VIEW_ID_PROPERTY]: { rich_text: {} } });
+  if (annualVacation && annualVacation.type !== "number") {
+    throw new Error(`D1 property "${ANNUAL_VACATION_PROPERTY}" is ${annualVacation.type}, expected number`);
+  }
+  const additions = {};
+  if (!chartViewId) additions[VACATION_CHART_VIEW_ID_PROPERTY] = { rich_text: {} };
+  if (!annualVacation) additions[ANNUAL_VACATION_PROPERTY] = { number: { format: "number" } };
+  if (Object.keys(additions).length > 0) {
+    await updateDataSource(D1, additions);
     d1 = await getDataSource(D1);
   }
   assertPropertyTypes(d1, { ...D1_SCHEMA, [VACATION_CHART_VIEW_ID_PROPERTY]: "rich_text" });
@@ -336,8 +370,12 @@ async function persistFrontend(rowId, page) {
   });
 }
 
-async function setFrontendIndexProperties(pageId, name, email, key, d1RecordId) {
-  await updatePage(pageId, frontendProperties(name, email, key, d1RecordId), { icon: WORKER_FRONTEND_ICON });
+async function setFrontendIndexProperties(pageId, name, email, key, d1RecordId, annualVacation) {
+  await updatePage(
+    pageId,
+    frontendProperties(name, email, key, d1RecordId, annualVacation),
+    { icon: WORKER_FRONTEND_ICON },
+  );
 }
 
 async function findRecoverableFrontend(name, key, d1RecordId) {
@@ -381,11 +419,12 @@ async function moveLegacyPageIntoIndex(page, frontendsDataSource) {
 async function resolveWorkerPage(row, name, key) {
   const rememberedId = d1Value(row, "Frontend Page ID") || d1Value(row, "User Page ID");
   const email = emailValue(row);
+  const annualVacation = annualVacationValue(row);
   const frontendsDataSource = await frontendsDataSourceId();
 
   if (rememberedId) {
     const remembered = await moveLegacyPageIntoIndex(await getPage(rememberedId), frontendsDataSource);
-    await setFrontendIndexProperties(remembered.id, name, email, key, row.id);
+    await setFrontendIndexProperties(remembered.id, name, email, key, row.id, annualVacation);
     await persistFrontend(row.id, remembered);
     return remembered;
   }
@@ -395,14 +434,14 @@ async function resolveWorkerPage(row, name, key) {
   const existing = await findRecoverableFrontend(name, key, row.id);
   if (existing) {
     const recovered = await getPage(existing.id);
-    await setFrontendIndexProperties(recovered.id, name, email, key, row.id);
+    await setFrontendIndexProperties(recovered.id, name, email, key, row.id, annualVacation);
     await persistFrontend(row.id, recovered);
     return recovered;
   }
 
   const created = await createPage(
     { type: "data_source_id", data_source_id: frontendsDataSource },
-    frontendProperties(name, email, key, row.id),
+    frontendProperties(name, email, key, row.id, annualVacation),
     { icon: WORKER_FRONTEND_ICON },
   );
   // Persist immediately: every later stage can recover this exact page.
@@ -684,6 +723,7 @@ if (require.main === module) {
 
 module.exports = {
   berlinCurrentMonthKey,
+  annualVacationValue,
   currentMonthDates,
   dayDatabaseProperties,
   executionMode,
