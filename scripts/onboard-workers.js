@@ -33,6 +33,7 @@ const {
   archiveSchemaProperties,
   ensureArchivePresentation,
   ensureCurrentMonthPresentation,
+  ensureVacationDivider,
   ensureVacationChart,
   hideInternalFrontendColumnsInManagementView,
 } = require("./frontend-presentation");
@@ -69,10 +70,18 @@ const WEEKDAYS = [
 const WORKER_FRONTEND_ICON = { type: "emoji", emoji: "👤" };
 const VACATION_CHART_VIEW_ID_PROPERTY = "Urlaub Chart View ID";
 const MANUAL_ONBOARDING_CHECKLIST_ITEMS = [
-  "In Employee Front-ends → Customize layout → Properties: Email sichtbar lassen, Worker Key und D1 Record ID ausblenden und für alle Seiten übernehmen.",
-  "Diese Frontend-Seite an die oben angezeigte E-Mail einladen: Can view.",
-  "Aktueller Monat an dieselbe E-Mail einladen: Can edit content.",
-  "Archiv an dieselbe E-Mail einladen: Can view.",
+  {
+    text: "Diese Frontend-Seite an die oben angezeigte E-Mail einladen: Can view.",
+    permission: "Can view",
+  },
+  {
+    text: "Aktueller Monat an dieselbe E-Mail einladen: Can edit content.",
+    permission: "Can edit content",
+  },
+  {
+    text: "Archiv an dieselbe E-Mail einladen: Can view.",
+    permission: "Can view",
+  },
 ];
 
 const D1_SCHEMA = {
@@ -162,15 +171,30 @@ function frontendProperties(name, email, key, d1RecordId) {
 }
 
 function blockText(block) {
-  return (block?.[block?.type]?.rich_text || []).map((item) => item.plain_text || "").join("");
+  return (block?.[block?.type]?.rich_text || [])
+    .map((item) => item.plain_text || item.text?.content || "")
+    .join("");
+}
+
+function checklistRichText({ text, permission }) {
+  const permissionStart = text.lastIndexOf(permission);
+  return [
+    { type: "text", text: { content: text.slice(0, permissionStart) } },
+    {
+      type: "text",
+      text: { content: permission },
+      annotations: { bold: true },
+    },
+    { type: "text", text: { content: text.slice(permissionStart + permission.length) } },
+  ];
 }
 
 function manualOnboardingChecklistBlocks() {
-  return MANUAL_ONBOARDING_CHECKLIST_ITEMS.map((content) => ({
+  return MANUAL_ONBOARDING_CHECKLIST_ITEMS.map((item) => ({
     object: "block",
     type: "to_do",
     to_do: {
-      rich_text: [{ type: "text", text: { content } }],
+      rich_text: checklistRichText(item),
       checked: false,
     },
   }));
@@ -183,20 +207,20 @@ async function ensureManualOnboardingChecklist(pageId) {
     .map((block) => block.id);
 
   for (const item of MANUAL_ONBOARDING_CHECKLIST_ITEMS) {
-    if (idsForItem(item).length > 1) {
+    if (idsForItem(item.text).length > 1) {
       throw new Error(`Worker page ${pageId} has a duplicate onboarding checklist item; refusing to create another.`);
     }
   }
 
-  const missingItems = MANUAL_ONBOARDING_CHECKLIST_ITEMS.filter((item) => idsForItem(item).length === 0);
+  const missingItems = MANUAL_ONBOARDING_CHECKLIST_ITEMS.filter((item) => idsForItem(item.text).length === 0);
   if (missingItems.length > 0) {
     await appendBlockChildren(pageId, manualOnboardingChecklistBlocks().filter(
-      (block) => missingItems.includes(block.to_do.rich_text[0].text.content),
+      (block) => missingItems.some((item) => blockText(block) === item.text),
     ));
     blocks = await listAllBlockChildren(pageId);
   }
 
-  const checklistIds = MANUAL_ONBOARDING_CHECKLIST_ITEMS.flatMap(idsForItem);
+  const checklistIds = MANUAL_ONBOARDING_CHECKLIST_ITEMS.flatMap((item) => idsForItem(item.text));
   if (checklistIds.length !== MANUAL_ONBOARDING_CHECKLIST_ITEMS.length) {
     throw new Error(`Could not recover every onboarding checklist item on worker page ${pageId}`);
   }
@@ -540,9 +564,10 @@ async function provisionWorker(row) {
       archive: true,
     });
     await ensureArchivePresentation(d4.databaseId, d4.dataSourceId);
+    const vacationDividerId = await ensureVacationDivider(workerPage.id, d3.databaseId);
     const vacationChartViewId = await ensureVacationChart(
       workerPage.id,
-      d3.databaseId,
+      vacationDividerId,
       d4.dataSourceId,
       berlinCurrentMonthKey(),
       d1Value(row, VACATION_CHART_VIEW_ID_PROPERTY),

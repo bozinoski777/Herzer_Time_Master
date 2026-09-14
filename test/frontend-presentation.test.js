@@ -87,6 +87,7 @@ test("vacation number chart counts Urlaub rows in the current calendar year", ()
   assert.equal(payload.configuration.chart_type, "number");
   assert.deepEqual(payload.configuration.value, { aggregator: "count" });
   assert.equal(payload.configuration.height, "small");
+  assert.equal(payload.configuration.hide_title, false);
 });
 
 test("management view retains existing settings while hiding frontend internals", () => {

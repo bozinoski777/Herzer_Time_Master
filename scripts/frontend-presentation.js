@@ -9,6 +9,7 @@
  */
 
 const {
+  appendBlockChildren,
   assertPropertyTypes,
   createView,
   databaseIdFromDataSource,
@@ -142,9 +143,38 @@ function vacationChartPayload(dataSource, targetMonth) {
       stack_by: null,
       color_theme: "blue",
       height: "small",
+      // Notion exposes only this show/hide toggle for a number chart title;
+      // it does not expose a field for changing the generated "Count all" text.
       hide_title: false,
     },
   };
+}
+
+function directChildAfter(blocks, blockId) {
+  const index = blocks.findIndex((block) => block.id === blockId);
+  if (index < 0) {
+    throw new Error(`Could not find expected direct child block ${blockId} on the worker page`);
+  }
+  return blocks[index + 1];
+}
+
+async function ensureVacationDivider(workerPageId, d3DatabaseId) {
+  let blocks = await listAllBlockChildren(workerPageId);
+  let nextBlock = directChildAfter(blocks, d3DatabaseId);
+  if (nextBlock?.type === "divider") return nextBlock.id;
+
+  await appendBlockChildren(workerPageId, [{
+    object: "block",
+    type: "divider",
+    divider: {},
+  }], d3DatabaseId);
+
+  blocks = await listAllBlockChildren(workerPageId);
+  nextBlock = directChildAfter(blocks, d3DatabaseId);
+  if (nextBlock?.type !== "divider") {
+    throw new Error(`Could not recover the vacation KPI divider on worker page ${workerPageId}`);
+  }
+  return nextBlock.id;
 }
 
 async function defaultTableView(databaseId, dataSourceId) {
@@ -373,6 +403,7 @@ module.exports = {
   ensureArchivePresentation,
   ensureArchiveSchema,
   ensureCurrentMonthPresentation,
+  ensureVacationDivider,
   ensureVacationChart,
   hideInternalFrontendColumnsInManagementView,
   managementViewProperties,
