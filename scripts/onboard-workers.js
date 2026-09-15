@@ -28,23 +28,44 @@ const {
 } = require("./notion");
 
 const {
-  ARCHIVE_DATABASE_TITLE,
   CURRENT_MONTH_DATABASE_TITLE,
-  archiveSchemaProperties,
-  ensureArchivePresentation,
   ensureCurrentMonthPresentation,
   ensureVacationDivider,
   ensureVacationChart,
   hideInternalFrontendColumnsInManagementView,
 } = require("./frontend-presentation");
+const {
+  ARCHIVE_DATABASE_TITLE,
+  ensureArchivePresentation,
+} = require("./archive-presentation");
+const {
+  archiveDatabaseProperties,
+  assertDayDataSource,
+  currentMonthDatabaseProperties,
+} = require("./day-schemas");
 const { workerStandortOptions } = require("./worker-standort-options");
-const { reconcileSelectOptions } = require("./select-options");
+const {
+  planSelectOptionUpdate,
+  updateDataSourceSelect,
+} = require("./select-options");
 const {
   D1_OFFBOARDING_SCHEMA,
   OFFBOARDING_STATUS,
   ensureD1OffboardingSchema,
   ensureD1OffboardingView,
 } = require("./offboarding");
+const {
+  D1_WORKER_IDENTITY_SCHEMA,
+  FRONTEND_IDENTITY_SCHEMA,
+  assertFrontendIdentity: assertStoredFrontendIdentity,
+  selectRecoverableFrontend: selectStoredRecoverableFrontend,
+} = require("./worker-identity");
+const {
+  D1_WORKER_REFERENCE_SCHEMA,
+  assertUniqueWorkerReferences,
+  assertWorkerDatabaseReference,
+  assertWorkerDataSourceReference,
+} = require("./worker-database-references");
 
 const { D1_DATA_SOURCE_ID: D1, D8_DATA_SOURCE_ID: D8 } = requireEnv(
   "D1_DATA_SOURCE_ID",
@@ -103,22 +124,15 @@ const MANUAL_ONBOARDING_CHECKLIST_ITEMS = [
 ];
 
 const D1_CORE_SCHEMA = {
-  "Vor- und Nachname": "title",
+  ...D1_WORKER_IDENTITY_SCHEMA,
   Email: "email",
   Active: "checkbox",
   "Onboarding Status": "select",
   "Onboarding Error": "rich_text",
   "Onboarded At": "date",
-  "Worker Key": "rich_text",
-  // Retained while existing POC records migrate to the clearer frontend names.
-  "User Page ID": "rich_text",
-  "Frontend Page ID": "rich_text",
   "Frontend URL": "url",
   "Sharing Status": "select",
-  "D3 Database ID": "rich_text",
-  "D3 Data Source ID": "rich_text",
-  "D4 Database ID": "rich_text",
-  "D4 Data Source ID": "rich_text",
+  ...D1_WORKER_REFERENCE_SCHEMA,
 };
 const D1_SCHEMA = {
   ...D1_CORE_SCHEMA,
@@ -128,8 +142,7 @@ const D1_SCHEMA = {
 
 const FRONTENDS_CORE_SCHEMA = {
   "Vor- und Nachname": "title",
-  "Worker Key": "rich_text",
-  "D1 Record ID": "rich_text",
+  ...FRONTEND_IDENTITY_SCHEMA,
 };
 const FRONTENDS_SCHEMA = {
   ...FRONTENDS_CORE_SCHEMA,
@@ -395,86 +408,18 @@ async function setFrontendIndexProperties(pageId, name, email, key, d1RecordId, 
   );
 }
 
-function frontendIdentity(candidate) {
-  return {
-    d1RecordId: richTextValue(candidate.properties["D1 Record ID"]).trim(),
-    key: richTextValue(candidate.properties["Worker Key"]).trim(),
-  };
-}
-
 function assertFrontendIdentity(candidate, key, d1RecordId) {
-  const expectedD1RecordId = String(d1RecordId || "").trim();
-  const expectedKey = String(key || "").trim();
-  const stored = frontendIdentity(candidate);
-  if (!expectedD1RecordId) {
-    throw new Error("A D1 Record ID is required to validate a worker frontend");
-  }
-  if (stored.d1RecordId && stored.d1RecordId !== expectedD1RecordId) {
-    throw new Error(
-      `Frontend ${candidate.id} belongs to D1 Record ID ${stored.d1RecordId}, not ${expectedD1RecordId}.`,
-    );
-  }
-  if (stored.key && expectedKey && stored.key !== expectedKey) {
-    throw new Error(
-      `Frontend ${candidate.id} belongs to Worker Key ${stored.key}, not ${expectedKey}.`,
-    );
-  }
-  return candidate;
+  return assertStoredFrontendIdentity(candidate, {
+    workerKey: key,
+    d1RecordId,
+  });
 }
 
 function selectRecoverableFrontend(rows, key, d1RecordId) {
-  const expectedD1RecordId = String(d1RecordId || "").trim();
-  const expectedKey = String(key || "").trim();
-  if (!expectedD1RecordId) {
-    throw new Error("A D1 Record ID is required to recover a worker frontend");
-  }
-
-  const d1Matches = rows.filter(
-    (candidate) => frontendIdentity(candidate).d1RecordId === expectedD1RecordId,
-  );
-  if (d1Matches.length > 1) {
-    throw new Error(
-      `Employee Front-ends has multiple rows with D1 Record ID ${expectedD1RecordId}; refusing to choose one.`,
-    );
-  }
-
-  // Empty Worker Keys are never identifiers. A key is considered only after
-  // the exact D1 record lookup, and duplicate keys are always unsafe.
-  const keyMatches = expectedKey
-    ? rows.filter((candidate) => frontendIdentity(candidate).key === expectedKey)
-    : [];
-  if (keyMatches.length > 1) {
-    throw new Error(
-      `Employee Front-ends has multiple rows with Worker Key ${expectedKey}; refusing to choose one.`,
-    );
-  }
-
-  if (d1Matches.length === 1) {
-    const d1Match = d1Matches[0];
-    if (keyMatches.length === 1 && keyMatches[0].id !== d1Match.id) {
-      throw new Error(
-        `D1 Record ID ${expectedD1RecordId} and Worker Key ${expectedKey} identify different frontend rows.`,
-      );
-    }
-    const storedKey = frontendIdentity(d1Match).key;
-    if (storedKey && expectedKey && storedKey !== expectedKey) {
-      throw new Error(
-        `Frontend ${d1Match.id} has D1 Record ID ${expectedD1RecordId} but Worker Key ${storedKey}, not ${expectedKey}.`,
-      );
-    }
-    return d1Match;
-  }
-
-  if (keyMatches.length === 0) return undefined;
-
-  const keyMatch = keyMatches[0];
-  const keyMatchD1RecordId = frontendIdentity(keyMatch).d1RecordId;
-  if (keyMatchD1RecordId && keyMatchD1RecordId !== expectedD1RecordId) {
-    throw new Error(
-      `Worker Key ${expectedKey} belongs to D1 Record ID ${keyMatchD1RecordId}, not ${expectedD1RecordId}.`,
-    );
-  }
-  return keyMatch;
+  return selectStoredRecoverableFrontend(rows, {
+    workerKey: key,
+    d1RecordId,
+  });
 }
 
 async function findRecoverableFrontend(name, key, d1RecordId) {
@@ -543,13 +488,9 @@ async function resolveWorkerPage(row, name, key) {
 }
 
 function dayDatabaseProperties(standorte, archive = false) {
-  return {
-    Wochentag: { title: {} },
-    Datum: { date: {} },
-    Stunden: { number: { format: "number" } },
-    Standort: { select: { options: workerStandortOptions(standorte) } },
-    ...(archive ? archiveSchemaProperties() : {}),
-  };
+  return archive
+    ? archiveDatabaseProperties(standorte)
+    : currentMonthDatabaseProperties(standorte);
 }
 
 async function createWorkerDatabase(parentPageId, databaseTitle, standorte, archive) {
@@ -568,6 +509,41 @@ async function createWorkerDatabase(parentPageId, databaseTitle, standorte, arch
   };
 }
 
+function resolvedWorkerRoute(row, labels, databaseId, dataSourceId) {
+  return {
+    name: titleValue(row.properties["Vor- und Nachname"]).trim() || row.id,
+    workerKey: d1Value(row, "Worker Key"),
+    [`${labels.role}DatabaseId`]: databaseId,
+    [`${labels.role}DataSourceId`]: dataSourceId,
+  };
+}
+
+async function validateResolvedWorkerDatabase(
+  row,
+  parentPageId,
+  labels,
+  databaseId,
+  dataSourceId,
+  knownDatabase,
+  knownDataSource,
+) {
+  if (!labels.role) throw new Error(`Worker database ${labels.title} is missing its D3/D4 role`);
+  const worker = resolvedWorkerRoute(row, labels, databaseId, dataSourceId);
+  const [database, dataSource] = await Promise.all([
+    knownDatabase || getDatabase(databaseId),
+    knownDataSource || getDataSource(dataSourceId),
+  ]);
+  assertWorkerDatabaseReference(worker, labels.role, database, {
+    expectedParentPageId: parentPageId,
+  });
+  assertWorkerDataSourceReference(worker, labels.role, dataSource, {
+    // A recovered D4 may predate the Monat formula. Archive presentation
+    // repairs that metadata immediately after the route itself is proven.
+    schema: assertDayDataSource,
+  });
+  return { databaseId, dataSourceId };
+}
+
 /**
  * Resolve a D3/D4 pair from D1 whenever possible. If just one ID was saved,
  * derive and save the other. If neither was saved, inspect the worker page for
@@ -576,15 +552,34 @@ async function createWorkerDatabase(parentPageId, databaseTitle, standorte, arch
 async function resolveWorkerDatabase(row, parentPageId, labels) {
   let databaseId = d1Value(row, labels.databaseIdProperty);
   let dataSourceId = d1Value(row, labels.dataSourceIdProperty);
+  let database;
+  let dataSource;
+  const recoveredProperties = {};
 
   if (databaseId && !dataSourceId) {
-    dataSourceId = dataSourceIdFromDatabase(await getDatabase(databaseId));
-    await updateD1(row.id, { [labels.dataSourceIdProperty]: richText(dataSourceId) });
+    database = await getDatabase(databaseId);
+    dataSourceId = dataSourceIdFromDatabase(database);
+    recoveredProperties[labels.dataSourceIdProperty] = richText(dataSourceId);
   } else if (dataSourceId && !databaseId) {
-    databaseId = databaseIdFromDataSource(await getDataSource(dataSourceId));
-    await updateD1(row.id, { [labels.databaseIdProperty]: richText(databaseId) });
+    dataSource = await getDataSource(dataSourceId);
+    databaseId = databaseIdFromDataSource(dataSource);
+    recoveredProperties[labels.databaseIdProperty] = richText(databaseId);
   }
-  if (databaseId && dataSourceId) return { databaseId, dataSourceId, created: false };
+  if (databaseId && dataSourceId) {
+    const validated = await validateResolvedWorkerDatabase(
+      row,
+      parentPageId,
+      labels,
+      databaseId,
+      dataSourceId,
+      database,
+      dataSource,
+    );
+    if (Object.keys(recoveredProperties).length > 0) {
+      await updateD1(row.id, recoveredProperties);
+    }
+    return { ...validated, created: false };
+  }
 
   // Recover after a crash between database creation and the immediate D1 write.
   const existing = await findExactChild(
@@ -594,7 +589,16 @@ async function resolveWorkerDatabase(row, parentPageId, labels) {
   );
   if (existing) {
     databaseId = existing.id;
-    dataSourceId = dataSourceIdFromDatabase(await getDatabase(databaseId));
+    database = await getDatabase(databaseId);
+    dataSourceId = dataSourceIdFromDatabase(database);
+    await validateResolvedWorkerDatabase(
+      row,
+      parentPageId,
+      labels,
+      databaseId,
+      dataSourceId,
+      database,
+    );
     await updateD1(row.id, {
       [labels.databaseIdProperty]: richText(databaseId),
       [labels.dataSourceIdProperty]: richText(dataSourceId),
@@ -608,6 +612,13 @@ async function resolveWorkerDatabase(row, parentPageId, labels) {
     labels.standorte,
     labels.archive,
   );
+  await validateResolvedWorkerDatabase(
+    row,
+    parentPageId,
+    labels,
+    created.databaseId,
+    created.dataSourceId,
+  );
   await updateD1(row.id, {
     [labels.databaseIdProperty]: richText(created.databaseId),
     [labels.dataSourceIdProperty]: richText(created.dataSourceId),
@@ -616,33 +627,23 @@ async function resolveWorkerDatabase(row, parentPageId, labels) {
 }
 
 function recoveredStandortOptions(existing, standorte) {
-  const existingNames = new Set(existing.map((option) => option.name));
-  const additions = workerStandortOptions(standorte).filter(
-    (option) => !existingNames.has(option.name),
-  );
+  const desired = workerStandortOptions(standorte);
+  const plan = planSelectOptionUpdate(existing, desired, { retainExisting: true });
+  const addedNames = new Set(plan.added);
   return {
-    additions,
-    options: reconcileSelectOptions(existing, additions, { retainExisting: true }),
+    additions: desired.filter((option) => addedNames.has(option.name)),
+    options: plan.nextOptions,
   };
 }
 
 async function ensureStandortOptions(dataSourceId, standorte) {
-  const dataSource = await getDataSource(dataSourceId);
-  const property = dataSource.properties?.Standort;
-  if (!property || property.type !== "select") {
-    throw new Error(`Data source ${dataSourceId} needs a Select property named "Standort"`);
-  }
-  const plan = recoveredStandortOptions(property.select.options || [], standorte);
-  if (plan.additions.length === 0) return 0;
-
-  await updateDataSource(dataSourceId, {
-    Standort: {
-      select: {
-        options: plan.options,
-      },
-    },
+  const plan = await updateDataSourceSelect({
+    dataSourceId,
+    propertyName: "Standort",
+    desiredOptions: workerStandortOptions(standorte),
+    retainExisting: true,
   });
-  return plan.additions.length;
+  return plan.added.length;
 }
 
 async function ensureCurrentMonthDayRows(dataSourceId) {
@@ -700,6 +701,7 @@ async function provisionWorker(row) {
     // D3 → D4. Each database ID is written to D1 before the
     // following stage, so a retry never creates a duplicate store or view.
     const d3 = await resolveWorkerDatabase(row, workerPage.id, {
+      role: "d3",
       title: CURRENT_MONTH_DATABASE_TITLE,
       recoveryTitles: [CURRENT_MONTH_DATABASE_TITLE, "D3 · Current Month"],
       databaseIdProperty: "D3 Database ID",
@@ -709,6 +711,7 @@ async function provisionWorker(row) {
     await ensureCurrentMonthPresentation(d3.databaseId, d3.dataSourceId);
 
     const d4 = await resolveWorkerDatabase(row, workerPage.id, {
+      role: "d4",
       title: ARCHIVE_DATABASE_TITLE,
       recoveryTitles: [ARCHIVE_DATABASE_TITLE, "D4 · Archive"],
       databaseIdProperty: "D4 Database ID",
@@ -716,6 +719,14 @@ async function provisionWorker(row) {
       standorte,
       archive: true,
     });
+    assertUniqueWorkerReferences([{
+      name,
+      workerKey: key,
+      d3DatabaseId: d3.databaseId,
+      d3DataSourceId: d3.dataSourceId,
+      d4DatabaseId: d4.databaseId,
+      d4DataSourceId: d4.dataSourceId,
+    }]);
     await ensureArchivePresentation(d4.databaseId, d4.dataSourceId);
     const vacationDividerId = await ensureVacationDivider(workerPage.id, d3.databaseId);
     const vacationChartViewId = await ensureVacationChart(

@@ -16,17 +16,25 @@ const {
   getDataSource,
   queryAll,
   requireEnv,
-  richTextValue,
-  titleValue,
   updateDataSource,
   updatePage,
 } = require("./notion");
 const {
-  ensureArchivePresentation,
   ensureCurrentMonthPresentation,
 } = require("./frontend-presentation");
+const { ensureArchivePresentation } = require("./archive-presentation");
 const { WORK_TYPE_OPTIONS } = require("./worker-standort-options");
-const { reconcileSelectOptions } = require("./select-options");
+const {
+  planSelectOptionUpdate,
+  updateDataSourceSelect,
+} = require("./select-options");
+const { assertDayDataSource } = require("./day-schemas");
+const {
+  D1_WORKER_REFERENCE_SCHEMA,
+  assertWorkerDataSourceReference,
+  workerDataSourceTargets,
+  workerReferencesFromD1,
+} = require("./worker-database-references");
 
 const {
   D1_DATA_SOURCE_ID: D1,
@@ -36,13 +44,9 @@ const {
 const LEGACY_PROPERTY = "Tagtyp";
 const D1_SCHEMA = {
   "Vor- und Nachname": "title",
-  "D3 Data Source ID": "rich_text",
-  "D4 Data Source ID": "rich_text",
+  "Worker Key": "rich_text",
+  ...D1_WORKER_REFERENCE_SCHEMA,
 };
-
-function textValue(page, propertyName) {
-  return richTextValue(page.properties[propertyName]).trim();
-}
 
 function selectValue(page, propertyName) {
   return page.properties[propertyName]?.select?.name || "";
@@ -58,7 +62,9 @@ function mergeStandortOptions(standortOptions, legacyOptions, legacyValues) {
     ...legacyOptions,
     ...unique(legacyValues).map((name) => ({ name, color: "blue" })),
   ];
-  return reconcileSelectOptions(standortOptions, candidates, { retainExisting: true });
+  return planSelectOptionUpdate(standortOptions, candidates, {
+    retainExisting: true,
+  }).nextOptions;
 }
 
 function optionNames(options) {
@@ -111,22 +117,18 @@ async function targetsFromD1() {
   assertPropertyTypes(d1, D1_SCHEMA);
   const targets = new Map([[D7, { dataSourceId: D7, label: "D7", kinds: new Set(["d7"]) }]]);
 
-  for (const row of await queryAll(D1)) {
-    const worker = titleValue(row.properties["Vor- und Nachname"]).trim() || row.id;
-    for (const [propertyName, kind] of [
-      ["D3 Data Source ID", "d3"],
-      ["D4 Data Source ID", "d4"],
-    ]) {
-      const dataSourceId = textValue(row, propertyName);
-      if (!dataSourceId) continue;
-      const existing = targets.get(dataSourceId) || {
-        dataSourceId,
-        label: `${worker} ${kind.toUpperCase()}`,
-        kinds: new Set(),
-      };
-      existing.kinds.add(kind);
-      targets.set(dataSourceId, existing);
-    }
+  const workers = (await queryAll(D1)).map(workerReferencesFromD1);
+  const workerTargets = workerDataSourceTargets(workers, {
+    reservedDataSources: [
+      { id: D1, label: "D1 Data Source ID" },
+      { id: D7, label: "D7 Data Source ID" },
+    ],
+  });
+  for (const target of workerTargets) {
+    targets.set(target.dataSourceId, {
+      ...target,
+      kinds: new Set([target.role]),
+    });
   }
   return [...targets.values()];
 }
@@ -135,6 +137,11 @@ async function buildPlans() {
   const plans = [];
   for (const target of await targetsFromD1()) {
     const dataSource = await getDataSource(target.dataSourceId);
+    if (target.worker) {
+      assertWorkerDataSourceReference(target.worker, target.role, dataSource, {
+        schema: assertDayDataSource,
+      });
+    }
     const plan = planSource(target, dataSource, await queryAll(target.dataSourceId));
     if (plan) plans.push(plan);
   }
@@ -153,8 +160,10 @@ function conflictMessage(plans) {
 
 async function applyPlan(plan) {
   if (plan.needsOptionUpdate) {
-    await updateDataSource(plan.dataSourceId, {
-      Standort: { select: { options: plan.options } },
+    await updateDataSourceSelect({
+      dataSourceId: plan.dataSourceId,
+      propertyName: "Standort",
+      desiredOptions: plan.options,
     });
   }
 

@@ -51,6 +51,18 @@ Never give a worker access to D1, D7, D8, Control & Automation, Management, the 
 
 If a workflow stops at any point, a later run reuses D1 IDs first. If an ID is absent, it checks the one deterministic front-end row and the worker page's exact D3/D4 titles before creating anything. It also recognizes the prior `D3 · Current Month` and `D4 · Archive` titles only for crash recovery, then renames and configures those already-created databases instead of duplicating them. A legacy worker page under the approved Secure Timekeeping POC locations is moved into the index without copying its D3/D4 databases or their rows. Ambiguous matches are treated as errors rather than duplicated.
 
+## Shared automation services
+
+The workflows use a small set of common contracts instead of maintaining similar safety logic independently:
+
+- `worker-identity.js` treats the exact D1 row ID as the primary frontend identity and the exact non-empty Worker Key as the only recovery fallback. Worker names are never identifiers.
+- `worker-database-references.js` parses D3/D4 routes, detects duplicate or crossed references, validates a data source against its stored database ID, and can verify that a database remains under the expected worker frontend page.
+- `day-schemas.js` owns the D3 day contract and D4 archive extension. `archive-presentation.js` owns D4 schema repair, title, month grouping, sort order, and hidden technical columns.
+- `management-sync.js` is the single D7 upsert/reconciliation service used by both Daily sync and Month rollover.
+- `select-options.js` plans and applies color-safe select updates. Existing option IDs never carry a color update, and current-row values can be protected from removal.
+
+Keeping these boundaries shared means onboarding, Daily sync, Standort sync, rollover, and the guarded legacy migration validate the same identities and data shapes before writing.
+
 ## Month rollover: safety, stages, and recovery
 
 The rollover is a per-worker, crash-safe transaction. Its invariant is simple:

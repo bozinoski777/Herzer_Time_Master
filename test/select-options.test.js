@@ -3,7 +3,10 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { reconcileSelectOptions } = require("../scripts/select-options");
+const {
+  planSelectOptionUpdate,
+  reconcileSelectOptions,
+} = require("../scripts/select-options");
 
 test("select reconciliation never sends color with an existing option ID", () => {
   const options = reconcileSelectOptions(
@@ -38,4 +41,45 @@ test("additive reconciliation retains existing IDs and requested colors only for
     { id: "berlin-id", name: "Berlin" },
     { name: "Urlaub", color: "gray" },
   ]);
+});
+
+test("the shared planner reports exact additions/removals and ignores forbidden recoloring", () => {
+  const plan = planSelectOptionUpdate(
+    [
+      { id: "berlin-id", name: "Berlin", color: "yellow" },
+      { id: "old-id", name: "Old office", color: "blue" },
+    ],
+    [
+      { name: "Berlin", color: "blue" },
+      { name: "Urlaub", color: "gray" },
+    ],
+  );
+
+  assert.deepEqual(plan.added, ["Urlaub"]);
+  assert.deepEqual(plan.removed, ["Old office"]);
+  assert.equal(plan.changed, true);
+  assert.deepEqual(plan.nextOptions, [
+    { id: "berlin-id", name: "Berlin" },
+    { name: "Urlaub", color: "gray" },
+  ]);
+});
+
+test("the shared planner refuses to remove an option that a row still uses", () => {
+  assert.throws(
+    () => planSelectOptionUpdate(
+      [{ id: "old-id", name: "Old office", color: "blue" }],
+      [{ name: "Berlin", color: "blue" }],
+      { protectedNames: ["Old office"] },
+    ),
+    /still in use: Old office/,
+  );
+});
+
+test("the shared planner avoids a PATCH when only an existing color differs", () => {
+  const plan = planSelectOptionUpdate(
+    [{ id: "urlaub-id", name: "Urlaub", color: "blue" }],
+    [{ name: "Urlaub", color: "gray" }],
+  );
+  assert.equal(plan.changed, false);
+  assert.deepEqual(plan.nextOptions, [{ id: "urlaub-id", name: "Urlaub" }]);
 });

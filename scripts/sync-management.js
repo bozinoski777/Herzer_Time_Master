@@ -17,7 +17,7 @@ const {
 const {
   syncWorkerToManagement,
   validateWorkerD3DataSource,
-  validateManagementDataSource,
+  validateD7DataSource,
 } = require("./management-sync");
 const {
   OFFBOARDING_STATUS,
@@ -30,6 +30,12 @@ const {
   offboardingState,
 } = require("./offboarding");
 const { hasPendingRollover } = require("./rollover-manifest");
+const {
+  D1_WORKER_REFERENCE_SCHEMA,
+  assertUniqueWorkerReferences,
+  missingWorkerReferences,
+  workerReferencesFromD1,
+} = require("./worker-database-references");
 
 const {
   D1_DATA_SOURCE_ID: D1,
@@ -41,8 +47,7 @@ const D1_SCHEMA = {
   Active: "checkbox",
   "Onboarding Status": "select",
   "Worker Key": "rich_text",
-  "D3 Database ID": "rich_text",
-  "D3 Data Source ID": "rich_text",
+  ...D1_WORKER_REFERENCE_SCHEMA,
   "Sharing Status": "select",
   "Current Month": "rich_text",
   "Offboarding Status": "select",
@@ -74,21 +79,14 @@ async function validateSchema() {
       `D1 property "Rollover Manifest" is ${rolloverManifest.type}, expected rich_text`,
     );
   }
-  validateManagementDataSource(await getDataSource(D7));
+  validateD7DataSource(await getDataSource(D7));
 }
 
 function workerFromRow(row, fallbackMonth = berlinCurrentMonth()) {
   const state = offboardingState(row);
   return {
-    row,
-    rowId: row.id,
-    name: titleValue(row.properties["Vor- und Nachname"]).trim() || row.id,
+    ...workerReferencesFromD1(row),
     active: Boolean(row.properties.Active?.checkbox),
-    workerKey: richTextValue(row.properties["Worker Key"]).trim(),
-    d3DatabaseId: richTextValue(row.properties["D3 Database ID"]).trim(),
-    d3DataSourceId: richTextValue(row.properties["D3 Data Source ID"]).trim(),
-    d4DatabaseId: richTextValue(row.properties["D4 Database ID"]).trim(),
-    d4DataSourceId: richTextValue(row.properties["D4 Data Source ID"]).trim(),
     currentMonth: richTextValue(row.properties["Current Month"]).trim() || fallbackMonth,
     offboardingStatus: state.status,
     finalSyncAt: state.finalSyncAt,
@@ -112,41 +110,21 @@ async function readyWorkers() {
   return rows.map((row) => workerFromRow(row));
 }
 
-function routingKey(value) {
-  return String(value || "").replaceAll("-", "").toLowerCase();
-}
-
 function validateWorkerRegistry(workers) {
-  const workerKeys = new Map();
-  const d3DataSources = new Map();
-  const d3Databases = new Map();
-  for (const worker of workers) {
-    const workerKey = worker.workerKey;
-    const d3DataSourceId = routingKey(worker.d3DataSourceId);
-    const d3DatabaseId = routingKey(worker.d3DatabaseId);
-    if (workerKey && workerKeys.has(workerKey)) {
-      throw new Error(
-        `D1 assigns Worker Key ${workerKey} to both ${workerKeys.get(workerKey)} and ${worker.name}`,
-      );
-    }
-    if (d3DataSourceId && d3DataSources.has(d3DataSourceId)) {
-      throw new Error(
-        `D1 assigns D3 data source ${worker.d3DataSourceId} to both ${d3DataSources.get(d3DataSourceId)} and ${worker.name}`,
-      );
-    }
-    if (d3DatabaseId && d3Databases.has(d3DatabaseId)) {
-      throw new Error(
-        `D1 assigns D3 database ${worker.d3DatabaseId} to both ${d3Databases.get(d3DatabaseId)} and ${worker.name}`,
-      );
-    }
-    if (workerKey) workerKeys.set(workerKey, worker.name);
-    if (d3DataSourceId) d3DataSources.set(d3DataSourceId, worker.name);
-    if (d3DatabaseId) d3Databases.set(d3DatabaseId, worker.name);
-  }
+  return assertUniqueWorkerReferences(workers, {
+    // Daily synchronization reads only D3. Incomplete onboarding rows remain
+    // isolated, while every D3 route in scope is still globally unique.
+    roles: ["d3"],
+    reservedDataSources: [
+      { id: D1, label: "D1 Data Source ID" },
+      { id: D7, label: "D7 Data Source ID" },
+    ],
+  });
 }
 
 async function sourceRowsForWorker(worker) {
-  if (!worker.workerKey || !worker.d3DataSourceId || !worker.d3DatabaseId) {
+  const missing = missingWorkerReferences(worker, { roles: ["d3"] });
+  if (missing.length > 0) {
     throw new Error(`${worker.name} is Ready but has incomplete D3/D7 routing IDs`);
   }
   const sourceDataSource = await getDataSource(worker.d3DataSourceId);

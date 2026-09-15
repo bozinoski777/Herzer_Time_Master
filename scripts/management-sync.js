@@ -1,10 +1,17 @@
 "use strict";
 
+/**
+ * Canonical D7 upsert/reconciliation service.
+ *
+ * Daily sync and Month Rollover both use this module so Source Page identity,
+ * edited dates, deleted rows, verification, and stale-row cleanup follow one
+ * implementation.
+ */
+
 const {
   archivePage,
   assertPropertyTypes,
   createPage,
-  databaseIdFromDataSource,
   date,
   queryAll,
   richText,
@@ -14,19 +21,13 @@ const {
   titleValue,
   updatePage,
 } = require("./notion");
+const { DAY_PROPERTY_TYPES } = require("./day-schemas");
+const { assertWorkerDataSourceReference } = require("./worker-database-references");
 
-const D3_DAY_SCHEMA = {
-  Wochentag: "title",
-  Datum: "date",
-  Stunden: "number",
-  Standort: "select",
-};
+const D3_DAY_SCHEMA = DAY_PROPERTY_TYPES;
 
 const D7_SCHEMA = {
-  Wochentag: "title",
-  Datum: "date",
-  Stunden: "number",
-  Standort: "select",
+  ...DAY_PROPERTY_TYPES,
   "Standort (D8)": "relation",
   "Vor- und Nachname": "rich_text",
   "Worker Key": "rich_text",
@@ -87,10 +88,6 @@ function monthOf(dateValue) {
   return /^\d{4}-\d{2}/.test(dateValue || "") ? dateValue.slice(0, 7) : "";
 }
 
-function normalizedNotionId(value) {
-  return String(value || "").replaceAll("-", "").toLowerCase();
-}
-
 function assertWorkerRouting(worker) {
   if (!worker.name || !worker.workerKey || !worker.d3DatabaseId || !worker.d3DataSourceId) {
     throw new Error(`${worker.name || "Unnamed worker"}: D3/D7 routing data is incomplete`);
@@ -99,14 +96,9 @@ function assertWorkerRouting(worker) {
 
 function validateWorkerD3DataSource(worker, dataSource) {
   assertWorkerRouting(worker);
-  assertPropertyTypes(dataSource, D3_DAY_SCHEMA);
-  const actualDatabaseId = databaseIdFromDataSource(dataSource);
-  if (normalizedNotionId(actualDatabaseId) !== normalizedNotionId(worker.d3DatabaseId)) {
-    throw new Error(
-      `${worker.name}: D3 Data Source ID ${worker.d3DataSourceId} belongs to database ` +
-        `${actualDatabaseId}, not the stored D3 Database ID ${worker.d3DatabaseId}`,
-    );
-  }
+  return assertWorkerDataSourceReference(worker, "d3", dataSource, {
+    schema: D3_DAY_SCHEMA,
+  });
 }
 
 function managementProperties(worker, sourcePage, syncedAt = new Date().toISOString()) {
@@ -445,9 +437,11 @@ async function syncWorkerToManagement(
   return { ...counts, warnings: plan.warnings };
 }
 
-function validateManagementDataSource(dataSource) {
+function validateD7DataSource(dataSource) {
   assertPropertyTypes(dataSource, D7_SCHEMA);
 }
+
+const validateManagementDataSource = validateD7DataSource;
 
 module.exports = {
   D3_DAY_SCHEMA,
@@ -461,6 +455,7 @@ module.exports = {
   sourceDate,
   syncWorkerToManagement,
   validateWorkerD3DataSource,
+  validateD7DataSource,
   validateManagementDataSource,
   verifyManagementRows,
 };

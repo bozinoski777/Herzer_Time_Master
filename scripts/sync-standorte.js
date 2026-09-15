@@ -8,7 +8,6 @@ const {
   requireEnv,
   richTextValue,
   titleValue,
-  updateDataSource,
   updatePage,
 } = require("./notion");
 const {
@@ -16,8 +15,18 @@ const {
   workerStandortNames,
   workerStandortOptions,
 } = require("./worker-standort-options");
-const { reconcileSelectOptions } = require("./select-options");
+const {
+  planSelectOptionUpdate,
+  updateDataSourceSelect,
+} = require("./select-options");
 const { hasPendingRollover } = require("./rollover-manifest");
+const {
+  D1_WORKER_REFERENCE_SCHEMA,
+  assertUniqueWorkerReferences,
+  assertWorkerDataSourceReference,
+  workerReferencesFromD1,
+} = require("./worker-database-references");
+const { assertDayDataSource } = require("./day-schemas");
 
 const D7_STANDORT_RELATION = "Standort (D8)";
 
@@ -27,24 +36,18 @@ const {
   D8_DATA_SOURCE_ID: D8,
 } = requireEnv("D1_DATA_SOURCE_ID", "D7_DATA_SOURCE_ID", "D8_DATA_SOURCE_ID");
 
-function workerD3Id(row) {
-  return richTextValue(row.properties["D3 Data Source ID"]).trim();
-}
-
 function shouldSyncWorkerD3Options(worker) {
   return !hasPendingRollover(worker);
-}
-
-function normalizedNotionId(value) {
-  return String(value || "").replaceAll("-", "").toLowerCase();
 }
 
 async function validateSchema() {
   const d1 = await getDataSource(D1);
   assertPropertyTypes(d1, {
+    "Vor- und Nachname": "title",
     Active: "checkbox",
     "Onboarding Status": "select",
-    "D3 Data Source ID": "rich_text",
+    "Worker Key": "rich_text",
+    ...D1_WORKER_REFERENCE_SCHEMA,
   });
   const rolloverManifest = d1.properties?.["Rollover Manifest"];
   if (rolloverManifest && rolloverManifest.type !== "rich_text") {
@@ -92,11 +95,7 @@ async function readyWorkers() {
   });
 
   return rows.map((row) => ({
-    name: titleValue(row.properties["Vor- und Nachname"]).trim() || row.id,
-    d3DataSourceId: workerD3Id(row),
-    d3DatabaseId: richTextValue(row.properties["D3 Database ID"]).trim(),
-    d4DatabaseId: richTextValue(row.properties["D4 Database ID"]).trim(),
-    d4DataSourceId: richTextValue(row.properties["D4 Data Source ID"]).trim(),
+    ...workerReferencesFromD1(row),
     rolloverManifest: richTextValue(row.properties["Rollover Manifest"]).trim(),
     rolloverStatus: row.properties["Rollover Status"]?.select?.name || "",
   }));
@@ -178,42 +177,30 @@ async function syncD7StandortRelations(d7Filter, { verify = false } = {}) {
 }
 
 function standortOptionAdditions(existingOptions, standorte) {
-  const existingNames = new Set(existingOptions.map((option) => option.name));
+  const requestedNames = [...new Set(
+    standorte.map((name) => String(name || "").trim()).filter(Boolean),
+  )];
   const desiredByName = new Map(
-    workerStandortOptions(standorte).map((option) => [option.name, option]),
+    workerStandortOptions(requestedNames).map((option) => [option.name, option]),
   );
-  return standorte
-    .filter((name) => !existingNames.has(name))
-    .map((name) => desiredByName.get(name) || { name, color: "blue" });
+  const desired = requestedNames.map(
+    (name) => desiredByName.get(name) || { name, color: "blue" },
+  );
+  const plan = planSelectOptionUpdate(existingOptions, desired, { retainExisting: true });
+  const addedNames = new Set(plan.added);
+  return desired.filter((option) => addedNames.has(option.name));
 }
 
 /** D7 is history, so it retains every existing option and only gains new ones. */
 async function addMissingStandortOptions(dataSourceId, standorte) {
-  const dataSource = await getDataSource(dataSourceId);
-  const property = dataSource.properties?.Standort;
-
-  if (!property || property.type !== "select") {
-    throw new Error(`Data source ${dataSourceId} needs a Select property named \"Standort\"`);
-  }
-
-  const existingOptions = property.select.options || [];
-  const additions = standortOptionAdditions(existingOptions, standorte);
-
-  if (additions.length === 0) return 0;
-
-  await updateDataSource(dataSourceId, {
-    Standort: {
-      select: {
-        options: reconcileSelectOptions(
-          existingOptions,
-          additions,
-          { retainExisting: true },
-        ),
-      },
-    },
+  const additions = standortOptionAdditions([], standorte);
+  const plan = await updateDataSourceSelect({
+    dataSourceId,
+    propertyName: "Standort",
+    desiredOptions: additions,
+    retainExisting: true,
   });
-
-  return additions.length;
+  return plan.added.length;
 }
 
 function selectedStandortNames(rows) {
@@ -227,55 +214,45 @@ function selectedStandortNames(rows) {
  * A selected value is never removed: Notion would invalidate that current day.
  */
 function planD3StandortOptions(existingOptions, desiredOptions, rows) {
-  const desiredNames = new Set(desiredOptions.map((option) => option.name));
-  const selectedInactive = selectedStandortNames(rows).filter((name) => !desiredNames.has(name));
-  if (selectedInactive.length > 0) {
+  try {
+    return planSelectOptionUpdate(existingOptions, desiredOptions, {
+      protectedNames: selectedStandortNames(rows),
+    });
+  } catch (failure) {
+    if (!failure.message.startsWith("Cannot remove Select option(s)")) throw failure;
+    const desiredNames = new Set(desiredOptions.map((option) => option.name));
+    const selectedInactive = selectedStandortNames(rows).filter(
+      (name) => !desiredNames.has(name),
+    );
     throw new Error(
       `D3 still uses inactive Standort option(s): ${selectedInactive.join(", ")}. ` +
         "Change or clear those current-month entries before the option can be removed.",
     );
   }
-
-  const existingByName = new Map(existingOptions.map((option) => [option.name, option]));
-  const nextOptions = reconcileSelectOptions(existingOptions, desiredOptions);
-  const removed = existingOptions
-    .map((option) => option.name)
-    .filter((name) => !desiredNames.has(name));
-  const added = desiredOptions
-    .map((option) => option.name)
-    .filter((name) => !existingByName.has(name));
-  // Existing option colors are intentionally not part of the update plan:
-  // the public API rejects changing them. The names/order determine whether
-  // the option list needs a safe reconciliation.
-  const currentNames = existingOptions.map((option) => option.name);
-  const nextNames = nextOptions.map((option) => option.name);
-
-  return {
-    added,
-    removed,
-    nextOptions,
-    changed: JSON.stringify(currentNames) !== JSON.stringify(nextNames),
-  };
 }
 
-async function syncD3StandortOptions(dataSourceId, desiredOptions) {
+async function syncD3StandortOptions(dataSourceId, desiredOptions, worker) {
   const dataSource = await getDataSource(dataSourceId);
-  const property = dataSource.properties?.Standort;
-  if (!property || property.type !== "select") {
-    throw new Error(`Data source ${dataSourceId} needs a Select property named "Standort"`);
+  if (worker) {
+    assertWorkerDataSourceReference(worker, "d3", dataSource, {
+      schema: assertDayDataSource,
+    });
   }
-
-  const plan = planD3StandortOptions(
-    property.select.options || [],
+  const rows = await queryAll(dataSourceId);
+  // Produce the worker-specific diagnostic before handing the actual update
+  // to the shared, in-use-safe Select service.
+  planD3StandortOptions(
+    dataSource.properties?.Standort?.select?.options || [],
     desiredOptions,
-    await queryAll(dataSourceId),
+    rows,
   );
-  if (!plan.changed) return plan;
-
-  await updateDataSource(dataSourceId, {
-    Standort: { select: { options: plan.nextOptions } },
+  return updateDataSourceSelect({
+    dataSourceId,
+    dataSource,
+    propertyName: "Standort",
+    desiredOptions,
+    protectedNames: selectedStandortNames(rows),
   });
-  return plan;
 }
 
 /**
@@ -294,25 +271,21 @@ async function runStandortSynchronization(
   const standorte = workerStandortNames(activeStandorte);
   const d3Options = workerStandortOptions(activeStandorte);
   const failures = [];
-  const ownersByDataSource = new Map();
-
-  for (const worker of workers) {
-    if (!worker.d3DataSourceId) continue;
-    const key = normalizedNotionId(worker.d3DataSourceId);
-    const owners = ownersByDataSource.get(key) || [];
-    owners.push(worker.name);
-    ownersByDataSource.set(key, owners);
-  }
-  const duplicateDataSources = new Set(
-    [...ownersByDataSource.entries()]
-      .filter(([, owners]) => owners.length > 1)
-      .map(([dataSourceId]) => dataSourceId),
-  );
-  for (const dataSourceId of duplicateDataSources) {
-    failures.push(
-      `D1 assigns D3 data source ${dataSourceId} to more than one worker: ` +
-        ownersByDataSource.get(dataSourceId).join(", "),
-    );
+  let registrySafe = true;
+  try {
+    assertUniqueWorkerReferences(workers, {
+      // Standort sync mutates only D3. D4 is parsed for a pending rollover
+      // checkpoint but otherwise remains outside this workflow's scope.
+      roles: ["d3"],
+      reservedDataSources: [
+        { id: D1, label: "D1 Data Source ID" },
+        { id: D7, label: "D7 Data Source ID" },
+        { id: D8, label: "D8 Data Source ID" },
+      ],
+    });
+  } catch (failure) {
+    registrySafe = false;
+    failures.push(`D1 worker routing: ${errorMessage(failure)}`);
   }
 
   console.log(`Distributing ${standorte.length} Standort/work option(s) to ${workers.length} worker(s).`);
@@ -322,7 +295,7 @@ async function runStandortSynchronization(
       failures.push(`${worker.name} is Ready but has no D3 Data Source ID in D1`);
       continue;
     }
-    if (duplicateDataSources.has(normalizedNotionId(worker.d3DataSourceId))) continue;
+    if (!registrySafe) continue;
     let shouldSyncOptions;
     try {
       shouldSyncOptions = shouldSyncWorkerD3Options(worker);
@@ -338,7 +311,7 @@ async function runStandortSynchronization(
     }
 
     try {
-      const result = await syncWorkerOptions(worker.d3DataSourceId, d3Options);
+      const result = await syncWorkerOptions(worker.d3DataSourceId, d3Options, worker);
       console.log(
         `${worker.name}: ${result.added.length} added, ` +
           `${result.removed.length} inactive option(s) removed.`,

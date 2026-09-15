@@ -17,34 +17,34 @@ const {
   getView,
   listAllBlockChildren,
   listAllViews,
-  updateDataSource,
-  updateDatabase,
   updateView,
   writableViewProperties,
 } = require("./notion");
+const { DAY_PROPERTY_TYPES } = require("./day-schemas");
+const {
+  ARCHIVE_DATABASE_TITLE,
+  ARCHIVE_MONTH_FORMULA,
+  ARCHIVE_MONTH_PROPERTY,
+  archiveSchemaProperties,
+  archiveViewPayload,
+  configureArchiveView,
+  ensureArchivePresentation,
+  ensureArchiveSchema,
+} = require("./archive-presentation");
+const {
+  defaultTableView,
+  propertyId,
+  setDatabaseAndDataSourceTitle,
+  viewProperties,
+} = require("./database-presentation");
 
 const CURRENT_MONTH_DATABASE_TITLE = "Aktueller Monat";
-const ARCHIVE_DATABASE_TITLE = "Archiv";
-const ARCHIVE_MONTH_PROPERTY = "Monat";
-const ARCHIVE_MONTH_FORMULA = 'formatDate(prop("Datum"), "YYYY-MM")';
 const VACATION_CHART_TITLE = "Genommene Urlaubstage bis Ende letzten Monats";
 // Kept only for crash recovery of a worker whose provisioning started on the
 // immediately preceding template revision.
 const LEGACY_VACATION_CHART_TITLE = "Urlaubstage bis Ende letzten Monats";
 
-const DAY_SCHEMA = {
-  Wochentag: "title",
-  Datum: "date",
-  Stunden: "number",
-  Standort: "select",
-};
-
 const D3_VISIBLE_COLUMNS = ["Wochentag", "Datum", "Standort", "Stunden"];
-const D4_VISIBLE_COLUMNS = ["Wochentag", "Datum", "Standort", "Stunden"];
-
-function textItems(content) {
-  return [{ type: "text", text: { content } }];
-}
 
 function validMonth(targetMonth) {
   if (!/^\d{4}-\d{2}$/.test(targetMonth || "")) return false;
@@ -77,25 +77,8 @@ function vacationChartUsesCalendarYear(view, targetMonth) {
   )));
 }
 
-function propertyId(dataSource, propertyName) {
-  const property = dataSource.properties?.[propertyName];
-  if (!property?.id) {
-    throw new Error(`Data source ${dataSource.id} is missing property "${propertyName}"`);
-  }
-  return property.id;
-}
-
-function viewProperties(dataSource, visibleNames, hiddenNames = []) {
-  const visible = new Set(visibleNames);
-  const hidden = new Set(hiddenNames);
-  return [...visibleNames, ...hiddenNames].map((name) => ({
-    property_id: propertyId(dataSource, name),
-    visible: visible.has(name) && !hidden.has(name),
-  }));
-}
-
 function currentMonthViewPayload(dataSource) {
-  assertPropertyTypes(dataSource, DAY_SCHEMA);
+  assertPropertyTypes(dataSource, DAY_PROPERTY_TYPES);
   return {
     sorts: [{ property: "Datum", direction: "ascending" }],
     configuration: {
@@ -106,30 +89,8 @@ function currentMonthViewPayload(dataSource) {
   };
 }
 
-function archiveViewPayload(dataSource) {
-  assertPropertyTypes(dataSource, { ...DAY_SCHEMA, "Sync Key": "rich_text", [ARCHIVE_MONTH_PROPERTY]: "formula" });
-  const monthPropertyId = propertyId(dataSource, ARCHIVE_MONTH_PROPERTY);
-  return {
-    sorts: [{ property: "Datum", direction: "descending" }],
-    configuration: {
-      type: "table",
-      properties: viewProperties(dataSource, D4_VISIBLE_COLUMNS, ["Sync Key", ARCHIVE_MONTH_PROPERTY]),
-      group_by: {
-        type: "formula",
-        property_id: monthPropertyId,
-        group_by: {
-          type: "text",
-          group_by: "exact",
-          sort: { type: "descending" },
-        },
-        hide_empty_groups: true,
-      },
-    },
-  };
-}
-
 function vacationChartPayload(dataSource, targetMonth) {
-  assertPropertyTypes(dataSource, DAY_SCHEMA);
+  assertPropertyTypes(dataSource, DAY_PROPERTY_TYPES);
   return {
     name: VACATION_CHART_TITLE,
     filter: vacationFilter(targetMonth),
@@ -178,96 +139,15 @@ async function ensureVacationDivider(workerPageId, d3DatabaseId) {
   return nextBlock.id;
 }
 
-async function defaultTableView(databaseId, dataSourceId) {
-  const references = await listAllViews(databaseId);
-  const views = await Promise.all(references.map((reference) => getView(reference.id)));
-  const tableViews = views.filter(
-    (view) => view.data_source_id === dataSourceId && view.type === "table",
-  );
-  const defaultViews = tableViews.filter((view) => view.name === "Default view");
-
-  if (defaultViews.length === 1) return defaultViews[0];
-  if (defaultViews.length > 1) {
-    throw new Error(`Database ${databaseId} has multiple table views named "Default view"`);
-  }
-  if (tableViews.length === 1) return tableViews[0];
-
-  throw new Error(
-    `Database ${databaseId} has no uniquely identifiable default table view; refusing to create or overwrite a view.`,
-  );
-}
-
-async function setDatabaseAndDataSourceTitle(databaseId, dataSourceId, databaseTitle) {
-  // Database and data source titles are distinct in the current Notion API.
-  // Set both so the visible label stays exact in either Notion surface.
-  await updateDatabase(databaseId, { is_inline: true, title: textItems(databaseTitle) });
-  await updateDataSource(dataSourceId, {}, { title: textItems(databaseTitle) });
-}
-
-function archiveSchemaProperties() {
-  return {
-    "Sync Key": { rich_text: {} },
-    [ARCHIVE_MONTH_PROPERTY]: {
-      formula: { expression: ARCHIVE_MONTH_FORMULA },
-    },
-  };
-}
-
-async function ensureArchiveSchema(dataSourceId) {
-  let dataSource = await getDataSource(dataSourceId);
-  assertPropertyTypes(dataSource, DAY_SCHEMA);
-
-  const syncKey = dataSource.properties?.["Sync Key"];
-  if (syncKey && syncKey.type !== "rich_text") {
-    throw new Error(`D4 ${dataSourceId} property "Sync Key" is ${syncKey.type}, expected rich_text`);
-  }
-
-  const month = dataSource.properties?.[ARCHIVE_MONTH_PROPERTY];
-  if (month && month.type !== "formula") {
-    throw new Error(
-      `D4 ${dataSourceId} property "${ARCHIVE_MONTH_PROPERTY}" is ${month.type}, expected formula`,
-    );
-  }
-
-  const additions = {};
-  if (!syncKey) additions["Sync Key"] = { rich_text: {} };
-  if (!month || month.formula?.expression !== ARCHIVE_MONTH_FORMULA) {
-    additions[ARCHIVE_MONTH_PROPERTY] = archiveSchemaProperties()[ARCHIVE_MONTH_PROPERTY];
-  }
-
-  if (Object.keys(additions).length > 0) {
-    await updateDataSource(dataSourceId, additions);
-    dataSource = await getDataSource(dataSourceId);
-  }
-
-  assertPropertyTypes(dataSource, {
-    ...DAY_SCHEMA,
-    "Sync Key": "rich_text",
-    [ARCHIVE_MONTH_PROPERTY]: "formula",
-  });
-  return dataSource;
-}
-
 async function configureCurrentMonthView(databaseId, dataSourceId) {
   const dataSource = await getDataSource(dataSourceId);
   const view = await defaultTableView(databaseId, dataSourceId);
   await updateView(view.id, currentMonthViewPayload(dataSource));
 }
 
-async function configureArchiveView(databaseId, dataSourceId) {
-  const dataSource = await ensureArchiveSchema(dataSourceId);
-  const view = await defaultTableView(databaseId, dataSourceId);
-  await updateView(view.id, archiveViewPayload(dataSource));
-}
-
 async function ensureCurrentMonthPresentation(databaseId, dataSourceId) {
   await setDatabaseAndDataSourceTitle(databaseId, dataSourceId, CURRENT_MONTH_DATABASE_TITLE);
   await configureCurrentMonthView(databaseId, dataSourceId);
-}
-
-async function ensureArchivePresentation(databaseId, dataSourceId) {
-  await setDatabaseAndDataSourceTitle(databaseId, dataSourceId, ARCHIVE_DATABASE_TITLE);
-  await configureArchiveView(databaseId, dataSourceId);
 }
 
 function isVacationChart(view, dataSourceId) {

@@ -1,6 +1,7 @@
 "use strict";
 
 const { titleValue } = require("./notion");
+const { normalizeNotionId } = require("./worker-identity");
 
 const ROUTING_FIELDS = [
   "d3DatabaseId",
@@ -8,10 +9,6 @@ const ROUTING_FIELDS = [
   "d4DatabaseId",
   "d4DataSourceId",
 ];
-
-function normalizedNotionId(value) {
-  return String(value || "").replaceAll("-", "").toLowerCase();
-}
 
 function validIsoDate(value) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value || "")) return false;
@@ -31,7 +28,7 @@ function manifestDay(entry) {
 
 function manifestRouting(worker) {
   return Object.fromEntries(
-    ROUTING_FIELDS.map((field) => [field, normalizedNotionId(worker[field])]),
+    ROUTING_FIELDS.map((field) => [field, normalizeNotionId(worker[field])]),
   );
 }
 
@@ -138,6 +135,6 @@ module.exports = {
   buildRolloverManifest,
   hasPendingRollover,
   manifestSourceEntries,
-  normalizedNotionId,
+  normalizedNotionId: normalizeNotionId,
   parseRolloverManifest,
 };

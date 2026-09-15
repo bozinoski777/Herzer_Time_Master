@@ -43,13 +43,18 @@ const {
 } = requireEnv("D1_DATA_SOURCE_ID", "D7_DATA_SOURCE_ID", "D8_DATA_SOURCE_ID");
 
 const { workerStandortOptions } = require("./worker-standort-options");
-const { reconcileSelectOptions } = require("./select-options");
+const {
+  planSelectOptionUpdate,
+  reconcileSelectOptions,
+  updateDataSourceSelect,
+} = require("./select-options");
 const { updateVacationChartForRollover } = require("./frontend-presentation");
+const { ensureArchiveSchema } = require("./archive-presentation");
+const { assertDayDataSource } = require("./day-schemas");
 const { HOLIDAY_HOURS, augsburgPaidHolidayName } = require("./augsburg-holidays");
 const {
   syncWorkerToManagement,
-  validateWorkerD3DataSource,
-  validateManagementDataSource,
+  validateD7DataSource,
 } = require("./management-sync");
 const { syncD7StandortRelations } = require("./sync-standorte");
 const {
@@ -57,6 +62,15 @@ const {
   manifestSourceEntries,
   parseRolloverManifest,
 } = require("./rollover-manifest");
+const {
+  D1_WORKER_REFERENCE_SCHEMA,
+  assertPageBelongsToWorkerRoute,
+  assertUniqueWorkerReferences,
+  assertWorkerDataSourceReference,
+  missingWorkerReferences,
+  normalizeNotionId,
+  workerReferencesFromD1,
+} = require("./worker-database-references");
 
 const BERLIN_TIME_ZONE = "Europe/Berlin";
 const WEEKDAYS = [
@@ -75,10 +89,7 @@ const D1_BASE_SCHEMA = {
   Active: "checkbox",
   "Onboarding Status": "select",
   "Worker Key": "rich_text",
-  "D3 Database ID": "rich_text",
-  "D3 Data Source ID": "rich_text",
-  "D4 Database ID": "rich_text",
-  "D4 Data Source ID": "rich_text",
+  ...D1_WORKER_REFERENCE_SCHEMA,
 };
 
 const D1_ROLLOVER_SCHEMA = {
@@ -88,13 +99,6 @@ const D1_ROLLOVER_SCHEMA = {
   "Rollover Status": "select",
   "Rollover Error": "rich_text",
   "Rollover Manifest": "rich_text",
-};
-
-const DAY_SCHEMA = {
-  Wochentag: "title",
-  Datum: "date",
-  Stunden: "number",
-  Standort: "select",
 };
 
 function berlinDateParts(now = new Date()) {
@@ -219,15 +223,8 @@ function selectNamesFromRows(rows, propertyName) {
 
 function workerFromRow(row) {
   return {
-    row,
-    rowId: row.id,
-    name: titleValue(row.properties["Vor- und Nachname"]).trim() || row.id,
-    workerKey: rowText(row, "Worker Key"),
+    ...workerReferencesFromD1(row),
     active: Boolean(row.properties.Active?.checkbox),
-    d3DatabaseId: rowText(row, "D3 Database ID"),
-    d3DataSourceId: rowText(row, "D3 Data Source ID"),
-    d4DatabaseId: rowText(row, "D4 Database ID"),
-    d4DataSourceId: rowText(row, "D4 Data Source ID"),
     vacationChartViewId: rowText(row, "Urlaub Chart View ID"),
     rolloverStatus: row.properties["Rollover Status"]?.select?.name || "",
     currentMonth: rowText(row, "Current Month"),
@@ -239,42 +236,22 @@ function workerFromRow(row) {
 
 function missingRolloverReferences(worker) {
   return [
-    ...(worker.workerKey ? [] : ["Worker Key"]),
-    ...(worker.d3DatabaseId ? [] : ["D3 Database ID"]),
-    ...(worker.d3DataSourceId ? [] : ["D3 Data Source ID"]),
-    ...(worker.d4DatabaseId ? [] : ["D4 Database ID"]),
-    ...(worker.d4DataSourceId ? [] : ["D4 Data Source ID"]),
+    ...missingWorkerReferences(worker),
     ...(worker.currentMonth ? [] : ["Current Month"]),
   ];
 }
 
-function routingKey(value) {
-  return String(value || "").replaceAll("-", "").toLowerCase();
-}
-
 function validateRolloverRegistry(workers) {
-  const workerKeys = new Map();
-  const databases = new Map();
-  const dataSources = new Map();
-  const register = (owners, rawValue, worker, role, normalize = routingKey) => {
-    const value = normalize(rawValue);
-    if (!value) return;
-    const prior = owners.get(value);
-    if (prior) {
-      throw new Error(
-        `D1 reuses ${role} ${rawValue} for ${worker.name}; it is already ${prior.role} ` +
-          `for ${prior.workerName}. No rollover data was changed`,
-      );
-    }
-    owners.set(value, { workerName: worker.name, role });
-  };
-
-  for (const worker of workers) {
-    register(workerKeys, worker.workerKey, worker, "Worker Key", (value) => value);
-    register(databases, worker.d3DatabaseId, worker, "D3 Database ID");
-    register(databases, worker.d4DatabaseId, worker, "D4 Database ID");
-    register(dataSources, worker.d3DataSourceId, worker, "D3 Data Source ID");
-    register(dataSources, worker.d4DataSourceId, worker, "D4 Data Source ID");
+  try {
+    return assertUniqueWorkerReferences(workers, {
+      reservedDataSources: [
+        { id: D1, label: "D1 Data Source ID" },
+        { id: D7, label: "D7 Data Source ID" },
+        { id: D8, label: "D8 Data Source ID" },
+      ],
+    });
+  } catch (failure) {
+    throw new Error(`${errorMessage(failure)}. No rollover data was changed`);
   }
 }
 
@@ -283,15 +260,12 @@ async function validateWorkerDataSources(worker) {
     getDataSource(worker.d3DataSourceId),
     getDataSource(worker.d4DataSourceId),
   ]);
-  validateWorkerD3DataSource(worker, d3DataSource);
-  assertPropertyTypes(d4DataSource, DAY_SCHEMA);
-  const actualD4DatabaseId = databaseIdFromDataSource(d4DataSource);
-  if (routingKey(actualD4DatabaseId) !== routingKey(worker.d4DatabaseId)) {
-    throw new Error(
-      `${worker.name}: D4 Data Source ID ${worker.d4DataSourceId} belongs to database ` +
-        `${actualD4DatabaseId}, not the stored D4 Database ID ${worker.d4DatabaseId}`,
-    );
-  }
+  assertWorkerDataSourceReference(worker, "d3", d3DataSource, {
+    schema: assertDayDataSource,
+  });
+  assertWorkerDataSourceReference(worker, "d4", d4DataSource, {
+    schema: assertDayDataSource,
+  });
   return { d3DataSource, d4DataSource };
 }
 
@@ -336,7 +310,9 @@ async function ensureD1RolloverSchema() {
   const references = await listAllViews(databaseId);
   const views = await Promise.all(references.map((reference) => getView(reference.id)));
   for (const view of views.filter(
-    (candidate) => routingKey(candidate.data_source_id) === routingKey(D1) && candidate.type === "table",
+    (candidate) =>
+      normalizeNotionId(candidate.data_source_id) === normalizeNotionId(D1) &&
+      candidate.type === "table",
   )) {
     const existing = writableViewProperties(
       dataSource,
@@ -356,22 +332,6 @@ async function ensureD1RolloverSchema() {
   }
 }
 
-async function ensureD4Schema(dataSourceId) {
-  let dataSource = await getDataSource(dataSourceId);
-  assertPropertyTypes(dataSource, DAY_SCHEMA);
-  const syncKey = dataSource.properties?.["Sync Key"];
-
-  if (syncKey && syncKey.type !== "rich_text") {
-    throw new Error(`D4 ${dataSourceId} property "Sync Key" is ${syncKey.type}, expected rich_text`);
-  }
-  if (!syncKey) {
-    await updateDataSource(dataSourceId, { "Sync Key": { rich_text: {} } });
-    dataSource = await getDataSource(dataSourceId);
-  }
-  assertPropertyTypes(dataSource, { ...DAY_SCHEMA, "Sync Key": "rich_text" });
-  return dataSource;
-}
-
 async function activeStandorte() {
   const rows = await queryAll(D8, {
     property: "Active",
@@ -382,36 +342,28 @@ async function activeStandorte() {
 
 /** Add values without omitting existing options: D4 is historical and immutable. */
 function historyStandortAdditions(existingOptions, names) {
-  const existingNames = new Set(existingOptions.map((option) => option.name));
+  const requestedNames = uniqueNames(names);
   const desiredByName = new Map(
-    workerStandortOptions(names).map((option) => [option.name, option]),
+    workerStandortOptions(requestedNames).map((option) => [option.name, option]),
   );
-  return uniqueNames(names)
-    .filter((name) => !existingNames.has(name))
-    .map((name) => desiredByName.get(name) || { name, color: "blue" });
+  const desired = requestedNames.map(
+    (name) => desiredByName.get(name) || { name, color: "blue" },
+  );
+  const plan = planSelectOptionUpdate(existingOptions, desired, { retainExisting: true });
+  const addedNames = new Set(plan.added);
+  return desired.filter((option) => addedNames.has(option.name));
 }
 
 async function addSelectOptions(dataSourceId, dataSource, propertyName, names) {
-  const property = dataSource.properties?.[propertyName];
-  if (!property || property.type !== "select") {
-    throw new Error(`Data source ${dataSourceId} needs a Select property named "${propertyName}"`);
-  }
-  const existing = property.select.options || [];
-  const additions = historyStandortAdditions(existing, names);
-  if (additions.length === 0) return 0;
-
-  await updateDataSource(dataSourceId, {
-    [propertyName]: {
-      select: {
-        options: reconcileSelectOptions(
-          existing,
-          additions,
-          { retainExisting: true },
-        ),
-      },
-    },
+  const additions = historyStandortAdditions([], names);
+  const plan = await updateDataSourceSelect({
+    dataSourceId,
+    dataSource,
+    propertyName,
+    desiredOptions: additions,
+    retainExisting: true,
   });
-  return additions.length;
+  return plan.added.length;
 }
 
 /**
@@ -422,28 +374,30 @@ async function addSelectOptions(dataSourceId, dataSource, propertyName, names) {
  */
 async function rebuildD3StandortOptions(dataSourceId, activeNames, currentRows) {
   const desiredOptions = workerStandortOptions(activeNames);
-  const desiredNames = desiredOptions.map((option) => option.name);
-  const selectedInactive = selectNamesFromRows(currentRows, "Standort").filter(
-    (name) => !desiredNames.includes(name),
-  );
-  if (selectedInactive.length > 0) {
+  const selectedNames = selectNamesFromRows(currentRows, "Standort");
+  const dataSource = await getDataSource(dataSourceId);
+  try {
+    planSelectOptionUpdate(
+      dataSource.properties?.Standort?.select?.options || [],
+      desiredOptions,
+      { protectedNames: selectedNames },
+    );
+  } catch (failure) {
+    if (!failure.message.startsWith("Cannot remove Select option(s)")) throw failure;
+    const desiredNames = new Set(desiredOptions.map((option) => option.name));
+    const selectedInactive = selectedNames.filter((name) => !desiredNames.has(name));
     throw new Error(
       `D3 contains current-month Standort value(s) outside active D8 sites and the standard work choices: ${selectedInactive.join(", ")}. ` +
         "Resolve those current-month entries before pruning D3 options.",
     );
   }
-
-  const dataSource = await getDataSource(dataSourceId);
-  const property = dataSource.properties?.Standort;
-  if (!property || property.type !== "select") {
-    throw new Error(`Data source ${dataSourceId} needs a Select property named "Standort"`);
-  }
-  const desired = reconcileSelectOptions(
-    property.select.options || [],
+  await updateDataSourceSelect({
+    dataSourceId,
+    dataSource,
+    propertyName: "Standort",
     desiredOptions,
-  );
-
-  await updateDataSource(dataSourceId, { Standort: { select: { options: desired } } });
+    protectedNames: selectedNames,
+  });
 }
 
 function validateD3Rows(rows, worker, targetMonth) {
@@ -677,7 +631,7 @@ async function reconcileWorkerD8Relations(worker) {
 
 async function verifyManifestBarriers(worker, manifest) {
   const sourceEntries = manifestSourceEntries(manifest);
-  await ensureD4Schema(worker.d4DataSourceId);
+  await ensureArchiveSchema(worker.d4DataSourceId);
   verifyD4ExactMonth(
     worker,
     manifest.sourceMonth,
@@ -792,21 +746,18 @@ async function archiveManifestSourcePages(worker, manifest, targetMonth) {
 }
 
 function assertManifestPageParent(worker, page) {
-  const parentId = page.parent?.data_source_id || page.parent?.database_id || "";
-  const expectedParents = new Set(
-    [worker.d3DataSourceId, worker.d3DatabaseId].map(routingKey).filter(Boolean),
-  );
-  if (!parentId || !expectedParents.has(routingKey(parentId))) {
-    throw new Error(
-      `${worker.name}: checkpoint page ${page.id} no longer belongs to the recorded D3; ` +
-        "refusing rollover resume",
-    );
+  try {
+    return assertPageBelongsToWorkerRoute(page, worker, "d3", {
+      description: "checkpoint page",
+    });
+  } catch (failure) {
+    throw new Error(`${errorMessage(failure)}; refusing rollover resume`);
   }
 }
 
 async function archiveMonth(worker, sourceMonth, sourceEntries, targetMonth) {
   archiveSourceMonth(sourceEntries, sourceMonth);
-  const d4DataSource = await ensureD4Schema(worker.d4DataSourceId);
+  const d4DataSource = await ensureArchiveSchema(worker.d4DataSourceId);
   // D4 must be able to retain all historical values before a page write.
   await addSelectOptions(
     worker.d4DataSourceId,
@@ -1167,7 +1118,7 @@ async function main() {
     return;
   }
   await ensureD1RolloverSchema();
-  validateManagementDataSource(await getDataSource(D7));
+  validateD7DataSource(await getDataSource(D7));
   const rows = await queryAll(D1);
   // Validate the complete registry before narrowing a one-worker simulation.
   // A target must never reuse a D3/D4 store owned by an out-of-scope or
