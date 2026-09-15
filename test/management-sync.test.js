@@ -4,7 +4,9 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  applyManagementPlan,
   planManagementSync,
+  relevantManagementFilter,
   validateWorkerD3DataSource,
   verifyManagementRows,
 } = require("../scripts/management-sync");
@@ -66,6 +68,75 @@ function worker(overrides = {}) {
   };
 }
 
+function monthBoundedRoute(start, end, route) {
+  return {
+    and: [
+      { property: "Datum", date: { on_or_after: start } },
+      { property: "Datum", date: { before: end } },
+      route,
+    ],
+  };
+}
+
+test("D7 query filter limits worker routing matches to the current month", () => {
+  const filter = relevantManagementFilter(worker(), [
+    sourceRow("source-1", "2026-09-01"),
+    sourceRow("source-2", "2026-09-02"),
+    sourceRow("source-1", "2026-09-01"),
+  ]);
+
+  assert.deepEqual(filter, {
+    or: [
+      { property: "Source Page ID", rich_text: { equals: "source-1" } },
+      { property: "Source Page ID", rich_text: { equals: "source-2" } },
+      monthBoundedRoute("2026-09-01", "2026-10-01", {
+        property: "Worker Key",
+        rich_text: { equals: "wrk_alex" },
+      }),
+      monthBoundedRoute("2026-09-01", "2026-10-01", {
+        property: "Source Database ID",
+        rich_text: { equals: "d3-db-alex" },
+      }),
+      {
+        property: "Sync Key",
+        rich_text: { starts_with: "wrk_alex|2026-09-" },
+      },
+    ],
+  });
+});
+
+test("D7 query filter rolls a December month bound into January", () => {
+  const filter = relevantManagementFilter(worker({ currentMonth: "2026-12" }), []);
+
+  assert.deepEqual(filter, {
+    or: [
+      monthBoundedRoute("2026-12-01", "2027-01-01", {
+        property: "Worker Key",
+        rich_text: { equals: "wrk_alex" },
+      }),
+      monthBoundedRoute("2026-12-01", "2027-01-01", {
+        property: "Source Database ID",
+        rich_text: { equals: "d3-db-alex" },
+      }),
+      {
+        property: "Sync Key",
+        rich_text: { starts_with: "wrk_alex|2026-12-" },
+      },
+    ],
+  });
+});
+
+test("D7 query finds a current-month Sync Key even when Datum is out of month", () => {
+  const filter = relevantManagementFilter(worker(), []);
+  const syncKeyBranch = filter.or.find((condition) => condition.property === "Sync Key");
+
+  assert.deepEqual(syncKeyBranch, {
+    property: "Sync Key",
+    rich_text: { starts_with: "wrk_alex|2026-09-" },
+  });
+  assert.equal("and" in syncKeyBranch, false);
+});
+
 test("date edits update the existing D7 row identified by Source Page ID", () => {
   const source = sourceRow("source-1", "2026-09-02", { weekday: "Dienstag" });
   const oldCopy = managementRow("d7-1", "source-1", "2026-09-01");
@@ -77,10 +148,30 @@ test("date edits update the existing D7 row identified by Source Page ID", () =>
   assert.equal(plan.creates.length, 0);
   assert.equal(plan.updates.length, 1);
   assert.equal(plan.updates[0].row.id, "d7-1");
-  assert.equal(
-    plan.updates[0].properties["Sync Key"].rich_text[0].text.content,
-    "wrk_alex|2026-09-02",
-  );
+  assert.deepEqual(plan.updates[0].properties, {
+    Wochentag: {
+      title: [{ type: "text", text: { content: "Dienstag" } }],
+    },
+    Datum: { date: { start: "2026-09-02" } },
+    "Sync Key": {
+      rich_text: [{ type: "text", text: { content: "wrk_alex|2026-09-02" } }],
+    },
+    "Last Synced At": { date: { start: "2026-09-14T07:00:00.000Z" } },
+  });
+});
+
+test("changed rows patch only changed business fields plus Last Synced At", () => {
+  const source = sourceRow("source-1", "2026-09-05", { hours: 8 });
+  const copy = managementRow("d7-1", "source-1", "2026-09-05", { hours: 4 });
+  const plan = planManagementSync(worker(), [source], [copy], {
+    syncedAt: "2026-09-14T08:00:00.000Z",
+  });
+
+  assert.equal(plan.updates.length, 1);
+  assert.deepEqual(plan.updates[0].properties, {
+    Stunden: { number: 8 },
+    "Last Synced At": { date: { start: "2026-09-14T08:00:00.000Z" } },
+  });
 });
 
 test("a moved date can reuse the Sync Key of a deleted current-month source", () => {
@@ -155,6 +246,27 @@ test("unchanged source rows do not receive a Last Synced At-only update", () => 
   assert.equal(plan.unchanged.length, 1);
   assert.equal(plan.updates.length, 0);
   verifyManagementRows(worker(), [source], [copy]);
+});
+
+test("applying an unchanged plan issues no D7 writes", async () => {
+  const source = sourceRow("source-1", "2026-09-05");
+  const copy = managementRow("d7-1", "source-1", "2026-09-05");
+  const plan = planManagementSync(worker(), [source], [copy]);
+  const writes = [];
+
+  const result = await applyManagementPlan(plan, "d7-source", {
+    archivePage: async (...args) => writes.push(["archive", ...args]),
+    updatePage: async (...args) => writes.push(["update", ...args]),
+    createPage: async (...args) => writes.push(["create", ...args]),
+  });
+
+  assert.deepEqual(writes, []);
+  assert.deepEqual(result, {
+    archived: 0,
+    created: 0,
+    updated: 0,
+    unchanged: 1,
+  });
 });
 
 test("rollover mode upserts its source snapshot without pruning other D7 rows", () => {

@@ -88,6 +88,21 @@ function monthOf(dateValue) {
   return /^\d{4}-\d{2}/.test(dateValue || "") ? dateValue.slice(0, 7) : "";
 }
 
+function monthDateRange(targetMonth) {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(targetMonth || "")) {
+    throw new Error(`Invalid management-sync month ${targetMonth || "(blank)"}`);
+  }
+  const year = Number(targetMonth.slice(0, 4));
+  const month = Number(targetMonth.slice(5, 7));
+  const nextMonth = month === 12
+    ? `${year + 1}-01`
+    : `${year}-${String(month + 1).padStart(2, "0")}`;
+  return {
+    start: `${targetMonth}-01`,
+    end: `${nextMonth}-01`,
+  };
+}
+
 function assertWorkerRouting(worker) {
   if (!worker.name || !worker.workerKey || !worker.d3DatabaseId || !worker.d3DataSourceId) {
     throw new Error(`${worker.name || "Unnamed worker"}: D3/D7 routing data is incomplete`);
@@ -124,23 +139,59 @@ function managementProperties(worker, sourcePage, syncedAt = new Date().toISOStr
   };
 }
 
-function managementValuesMatch(row, worker, sourcePage) {
-  const expected = managementProperties(worker, sourcePage, "ignored");
+/**
+ * Return the smallest safe D7 PATCH. Last Synced At is audit metadata: it is
+ * written only alongside an actual value/routing repair, never by itself.
+ */
+function managementPropertyChanges(
+  row,
+  worker,
+  sourcePage,
+  syncedAt = new Date().toISOString(),
+) {
+  const expected = managementProperties(worker, sourcePage, syncedAt);
+  const changes = {};
   const managementDate = row.properties.Datum?.date;
-  return (
-    titleValue(row.properties.Wochentag) === titleValue(sourcePage.properties.Wochentag) &&
-    managementDate?.start === sourceDate(sourcePage) &&
-    !managementDate?.end &&
-    !managementDate?.time_zone &&
-    (row.properties.Stunden?.number ?? null) === (sourcePage.properties.Stunden?.number ?? null) &&
-    (row.properties.Standort?.select?.name || "") ===
-      (sourcePage.properties.Standort?.select?.name || "") &&
-    rowText(row, "Vor- und Nachname") === worker.name &&
-    rowText(row, "Worker Key") === worker.workerKey &&
-    rowText(row, "Sync Key") === expected.syncKey &&
-    rowText(row, "Source Page ID") === sourcePage.id &&
-    rowText(row, "Source Database ID") === worker.d3DatabaseId
-  );
+
+  if (titleValue(row.properties.Wochentag) !== titleValue(sourcePage.properties.Wochentag)) {
+    changes.Wochentag = expected.properties.Wochentag;
+  }
+  if (
+    managementDate?.start !== sourceDate(sourcePage) ||
+    managementDate?.end ||
+    managementDate?.time_zone
+  ) {
+    changes.Datum = expected.properties.Datum;
+  }
+  if ((row.properties.Stunden?.number ?? null) !== (sourcePage.properties.Stunden?.number ?? null)) {
+    changes.Stunden = expected.properties.Stunden;
+  }
+  if (
+    (row.properties.Standort?.select?.name || "") !==
+    (sourcePage.properties.Standort?.select?.name || "")
+  ) {
+    changes.Standort = expected.properties.Standort;
+  }
+  for (const [propertyName, actual, desired] of [
+    ["Vor- und Nachname", rowText(row, "Vor- und Nachname"), worker.name],
+    ["Worker Key", rowText(row, "Worker Key"), worker.workerKey],
+    ["Sync Key", rowText(row, "Sync Key"), expected.syncKey],
+    ["Source Page ID", rowText(row, "Source Page ID"), sourcePage.id],
+    ["Source Database ID", rowText(row, "Source Database ID"), worker.d3DatabaseId],
+  ]) {
+    if (actual !== desired) changes[propertyName] = expected.properties[propertyName];
+  }
+
+  if (Object.keys(changes).length > 0) {
+    changes["Last Synced At"] = expected.properties["Last Synced At"];
+  }
+  return changes;
+}
+
+function managementValuesMatch(row, worker, sourcePage) {
+  return Object.keys(
+    managementPropertyChanges(row, worker, sourcePage, "ignored"),
+  ).length === 0;
 }
 
 function uniqueIndex(rows, valueForRow, label) {
@@ -320,10 +371,16 @@ function planManagementSync(
       if (targetSourceId && targetSourceId !== sourceRow.id) {
         throw new Error(`${worker.name}: D7 Sync Key ${built.syncKey} belongs to another D3 page`);
       }
-      if (managementValuesMatch(target, worker, sourceRow)) {
+      const changedProperties = managementPropertyChanges(
+        target,
+        worker,
+        sourceRow,
+        syncedAt,
+      );
+      if (Object.keys(changedProperties).length === 0) {
         unchanged.push({ row: target, sourceRow, ...built });
       } else {
-        updates.push({ row: target, sourceRow, ...built });
+        updates.push({ row: target, sourceRow, ...built, properties: changedProperties });
       }
 
     } else {
@@ -334,28 +391,54 @@ function planManagementSync(
   return { archives, creates, updates, unchanged, warnings };
 }
 
-async function relevantManagementRows(d7DataSourceId, worker, sourceRows = []) {
+function relevantManagementFilter(worker, sourceRows = []) {
+  assertWorkerRouting(worker);
+  const { start, end } = monthDateRange(worker.currentMonth);
   const sourcePageIds = [...new Set(sourceRows.map((row) => row.id).filter(Boolean))];
-  return queryAll(d7DataSourceId, {
+  const inCurrentMonth = (routeFilter) => ({
+    and: [
+      { property: "Datum", date: { on_or_after: start } },
+      { property: "Datum", date: { before: end } },
+      routeFilter,
+    ],
+  });
+
+  // Notion supports only two compound-filter levels. Keep routing alternatives
+  // at the root: Worker Key and D3 database matches are date-bounded, while the
+  // already month-specific Sync Key prefix remains able to heal a bad Datum.
+  return {
     or: [
-      { property: "Worker Key", rich_text: { equals: worker.workerKey } },
-      { property: "Source Database ID", rich_text: { equals: worker.d3DatabaseId } },
-      { property: "Sync Key", rich_text: { starts_with: `${worker.workerKey}|` } },
       ...sourcePageIds.map((sourcePageId) => ({
         property: "Source Page ID",
         rich_text: { equals: sourcePageId },
       })),
+      inCurrentMonth({ property: "Worker Key", rich_text: { equals: worker.workerKey } }),
+      inCurrentMonth({
+        property: "Source Database ID",
+        rich_text: { equals: worker.d3DatabaseId },
+      }),
+      {
+        property: "Sync Key",
+        rich_text: { starts_with: `${worker.workerKey}|${worker.currentMonth}-` },
+      },
     ],
-  });
+  };
 }
 
-async function applyManagementPlan(plan, d7DataSourceId) {
+async function relevantManagementRows(d7DataSourceId, worker, sourceRows = []) {
+  return queryAll(d7DataSourceId, relevantManagementFilter(worker, sourceRows));
+}
+
+async function applyManagementPlan(plan, d7DataSourceId, operations = {}) {
+  const archive = operations.archivePage || archivePage;
+  const update = operations.updatePage || updatePage;
+  const create = operations.createPage || createPage;
   // Remove stale current-month copies first so a moved date can safely reuse a
   // Sync Key formerly held by a deleted source page. Removal is recoverable.
-  for (const row of plan.archives) await archivePage(row.id);
-  for (const update of plan.updates) await updatePage(update.row.id, update.properties);
+  for (const row of plan.archives) await archive(row.id);
+  for (const change of plan.updates) await update(change.row.id, change.properties);
   for (const creation of plan.creates) {
-    await createPage(
+    await create(
       { type: "data_source_id", data_source_id: d7DataSourceId },
       creation.properties,
     );
@@ -449,8 +532,11 @@ module.exports = {
   applyManagementPlan,
   assertSourceRowsMatchWorkerMonth,
   managementProperties,
+  managementPropertyChanges,
   managementValuesMatch,
+  monthDateRange,
   planManagementSync,
+  relevantManagementFilter,
   relevantManagementRows,
   sourceDate,
   syncWorkerToManagement,
