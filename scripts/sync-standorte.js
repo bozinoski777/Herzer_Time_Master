@@ -29,6 +29,7 @@ const {
 const { assertDayDataSource } = require("./day-schemas");
 
 const D7_STANDORT_RELATION = "Standort (D8)";
+const D7_RELATION_CANDIDATE_BATCH_SIZE = 50;
 
 const {
   D1_DATA_SOURCE_ID: D1,
@@ -57,8 +58,9 @@ async function validateSchema() {
   await validateStandortRelationSchema();
 }
 
-async function validateStandortRelationSchema() {
-  const d8 = await getDataSource(D8);
+async function validateStandortRelationSchema(operations = {}) {
+  const retrieveDataSource = operations.getDataSource || getDataSource;
+  const d8 = await retrieveDataSource(D8);
   assertPropertyTypes(d8, {
     Standort: "title",
     Active: "checkbox",
@@ -66,11 +68,12 @@ async function validateStandortRelationSchema() {
     "Gearbeitete Stunden": "rollup",
   });
 
-  const d7 = await getDataSource(D7);
+  const d7 = await retrieveDataSource(D7);
   assertPropertyTypes(d7, {
     Standort: "select",
     [D7_STANDORT_RELATION]: "relation",
   });
+  return { d7, d8 };
 }
 
 async function getActiveStandorte() {
@@ -151,21 +154,154 @@ function planD7StandortRelations(d7Rows, d8Rows) {
   return updates;
 }
 
-async function syncD7StandortRelations(d7Filter, { verify = false } = {}) {
-  await validateStandortRelationSchema();
-  const [d8Rows, d7Rows] = await Promise.all([queryAll(D8), queryAll(D7, d7Filter)]);
+function d7StandortCandidateClauses(d7DataSource, d8Rows) {
+  const d8ByName = d8StandortIndex(d8Rows);
+  const workTypeNames = new Set(WORK_TYPE_OPTIONS.map((option) => option.name));
+  const clauses = [];
+
+  for (const [name, pageId] of d8ByName) {
+    // This includes every historical row that needs a backfill after a D8
+    // location is created, without rereading rows already linked correctly.
+    clauses.push({
+      and: [
+        { property: "Standort", select: { equals: name } },
+        {
+          property: D7_STANDORT_RELATION,
+          relation: { does_not_contain: pageId },
+        },
+      ],
+    });
+    // Also find a known D8 page linked from a row whose selected Standort says
+    // something else. This catches wrong links and extra known links.
+    clauses.push({
+      and: [
+        { property: D7_STANDORT_RELATION, relation: { contains: pageId } },
+        { property: "Standort", select: { does_not_equal: name } },
+      ],
+    });
+  }
+
+  // A blank-titled D8 page cannot be a valid target, but an existing relation
+  // can still point to it. Include those rows so the normal planner repairs or
+  // rejects them before any writes are made.
+  for (const row of d8Rows) {
+    if (titleValue(row.properties.Standort).trim() || !row.id) continue;
+    clauses.push({
+      property: D7_STANDORT_RELATION,
+      relation: { contains: row.id },
+    });
+  }
+
+  const nonPhysicalWorkTypes = [...workTypeNames].filter((name) => !d8ByName.has(name));
+  if (nonPhysicalWorkTypes.length > 0) {
+    clauses.push({
+      and: [
+        { property: "Standort", select: { equals: nonPhysicalWorkTypes } },
+        { property: D7_STANDORT_RELATION, relation: { is_not_empty: true } },
+      ],
+    });
+  }
+  clauses.push({
+    and: [
+      { property: "Standort", select: { is_empty: true } },
+      { property: D7_STANDORT_RELATION, relation: { is_not_empty: true } },
+    ],
+  });
+
+  // Preserve the old full-scan fail-closed behavior for a selected physical
+  // location that has no D8 row. Unused historic Select options are harmless.
+  const unknownOptions = [
+    ...new Set(
+      (d7DataSource.properties?.Standort?.select?.options || [])
+        .map((option) => String(option.name || ""))
+        .filter(
+          (name) => name.trim() && !d8ByName.has(name) && !workTypeNames.has(name),
+        ),
+    ),
+  ];
+  if (unknownOptions.length > 0) {
+    clauses.push({
+      property: "Standort",
+      select: { equals: unknownOptions },
+    });
+  }
+
+  return clauses;
+}
+
+function d7StandortCandidateFilters(
+  d7DataSource,
+  d8Rows,
+  { batchSize = D7_RELATION_CANDIDATE_BATCH_SIZE } = {},
+) {
+  if (!Number.isInteger(batchSize) || batchSize < 1) {
+    throw new Error(`D7 Standort candidate batch size must be a positive integer, got ${batchSize}`);
+  }
+  const clauses = d7StandortCandidateClauses(d7DataSource, d8Rows);
+  const filters = [];
+  for (let index = 0; index < clauses.length; index += batchSize) {
+    filters.push({ or: clauses.slice(index, index + batchSize) });
+  }
+  return filters;
+}
+
+async function queryD7StandortCandidates(
+  d7DataSource,
+  d8Rows,
+  { query = queryAll, batchSize = D7_RELATION_CANDIDATE_BATCH_SIZE } = {},
+) {
+  const byId = new Map();
+  const filters = d7StandortCandidateFilters(d7DataSource, d8Rows, { batchSize });
+  // Query sequentially so the shared Notion request limiter remains effective.
+  for (const filter of filters) {
+    for (const row of await query(D7, filter)) {
+      if (row?.id && !byId.has(row.id)) byId.set(row.id, row);
+    }
+  }
+  return [...byId.values()];
+}
+
+async function syncD7StandortRelations(
+  d7Filter,
+  {
+    verify = false,
+    fullAudit = false,
+    candidateBatchSize = D7_RELATION_CANDIDATE_BATCH_SIZE,
+    operations = {},
+  } = {},
+) {
+  const retrieveDataSource = operations.getDataSource || getDataSource;
+  const query = operations.queryAll || queryAll;
+  const update = operations.updatePage || updatePage;
+  const { d7: d7DataSource } = await validateStandortRelationSchema({
+    getDataSource: retrieveDataSource,
+  });
+  const d8Rows = await query(D8);
+  // An explicit filter is the rollover safety scope and always wins. A caller
+  // must opt in to the old all-history behavior when no filter is supplied;
+  // that exhaustive mode can also detect an otherwise-correct row carrying an
+  // extra relation to a trashed D8 page whose ID is no longer enumerable.
+  const scopedRows = () => {
+    if (d7Filter !== undefined) return query(D7, d7Filter);
+    if (fullAudit) return query(D7);
+    return queryD7StandortCandidates(d7DataSource, d8Rows, {
+      query,
+      batchSize: candidateBatchSize,
+    });
+  };
+  const d7Rows = await scopedRows();
   const updates = planD7StandortRelations(d7Rows, d8Rows);
 
-  for (const update of updates) {
-    await updatePage(update.pageId, {
+  for (const planned of updates) {
+    await update(planned.pageId, {
       [D7_STANDORT_RELATION]: {
-        relation: update.relatedD8Id ? [{ id: update.relatedD8Id }] : [],
+        relation: planned.relatedD8Id ? [{ id: planned.relatedD8Id }] : [],
       },
     });
   }
 
   if (verify) {
-    const remaining = planD7StandortRelations(await queryAll(D7, d7Filter), d8Rows);
+    const remaining = planD7StandortRelations(await scopedRows(), d8Rows);
     if (remaining.length > 0) {
       throw new Error(
         `D7 Standort relation verification failed for ${remaining.length} row(s)`,
@@ -264,6 +400,7 @@ async function runStandortSynchronization(
   workers,
   activeStandorte,
   operations = {},
+  { fullD7Audit = false } = {},
 ) {
   const syncWorkerOptions = operations.syncD3StandortOptions || syncD3StandortOptions;
   const addD7Options = operations.addMissingStandortOptions || addMissingStandortOptions;
@@ -329,7 +466,13 @@ async function runStandortSynchronization(
   }
 
   try {
-    const related = await syncD7Relations(undefined, { verify: true });
+    console.log(
+      `D7 relation mode: ${fullD7Audit ? "full historical audit" : "targeted mismatches"}.`,
+    );
+    const related = await syncD7Relations(undefined, {
+      verify: true,
+      fullAudit: fullD7Audit,
+    });
     console.log(`D7: ${related} Standort relation(s) reconciled.`);
   } catch (failure) {
     failures.push(`D7 Standort relations: ${errorMessage(failure)}`);
@@ -345,7 +488,9 @@ async function main() {
 
   const activeStandorte = await getActiveStandorte();
   const workers = await readyWorkers();
-  await runStandortSynchronization(workers, activeStandorte);
+  await runStandortSynchronization(workers, activeStandorte, {}, {
+    fullD7Audit: process.env.D7_STANDORT_FULL_AUDIT === "true",
+  });
 }
 
 if (require.main === module) {
@@ -356,8 +501,11 @@ if (require.main === module) {
 }
 
 module.exports = {
+  d7StandortCandidateClauses,
+  d7StandortCandidateFilters,
   planD3StandortOptions,
   planD7StandortRelations,
+  queryD7StandortCandidates,
   runStandortSynchronization,
   standortOptionAdditions,
   shouldSyncWorkerD3Options,

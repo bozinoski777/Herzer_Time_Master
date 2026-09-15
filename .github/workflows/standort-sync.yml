@@ -11,6 +11,12 @@ on:
     workflows: ["Daily worker sync"]
     types: [completed]
   workflow_dispatch:
+    inputs:
+      full_d7_audit:
+        description: Check every historical D7 relation instead of mismatch candidates only
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   actions: read
@@ -72,3 +78,4 @@ jobs:
           D1_DATA_SOURCE_ID: ${{ secrets.D1_DATA_SOURCE_ID }}
           D7_DATA_SOURCE_ID: ${{ secrets.D7_DATA_SOURCE_ID }}
           D8_DATA_SOURCE_ID: ${{ secrets.D8_DATA_SOURCE_ID }}
+          D7_STANDORT_FULL_AUDIT: ${{ github.event_name == 'workflow_dispatch' && inputs.full_d7_audit && 'true' || 'false' }}
