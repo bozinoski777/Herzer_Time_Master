@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  ARCHIVE_ALL_VIEW_TITLE,
   ARCHIVE_DATABASE_TITLE,
   ARCHIVE_MONTH_FORMULA,
   ARCHIVE_MONTH_PROPERTY,
@@ -13,6 +14,7 @@ const {
   archivePrimaryTableView,
   archiveVacationViewPayload,
   archiveViewPayload,
+  configureArchiveView,
   ensureArchiveVacationView,
 } = require("../scripts/archive-presentation");
 
@@ -36,6 +38,7 @@ function archiveDataSource(overrides = {}) {
 
 test("archive presentation exports the canonical title and schema metadata", () => {
   assert.equal(ARCHIVE_DATABASE_TITLE, "Archiv");
+  assert.equal(ARCHIVE_ALL_VIEW_TITLE, "Alle");
   assert.equal(ARCHIVE_MONTH_PROPERTY, "Monat");
   assert.equal(ARCHIVE_MONTH_FORMULA, 'formatDate(prop("Datum"), "YYYY-MM")');
   assert.deepEqual(D4_PROPERTY_TYPES, {
@@ -196,4 +199,34 @@ test("the main Archiv view remains identifiable after Urlaub was added", async (
     id: "vacation", name: "Urlaub", type: "table", data_source_id: dataSource.id,
   });
   assert.equal((await archivePrimaryTableView("d4-database", dataSource.id, operations)).id, "main");
+});
+
+test("onboarding renames only the existing main D4 view to Alle and recovers it on retry", async () => {
+  const { dataSource, views, calls, operations } = vacationViewFixture();
+  views.set("vacation", {
+    id: "vacation", name: "Urlaub", type: "table", data_source_id: dataSource.id,
+  });
+  operations.ensureArchiveSchema = async () => dataSource;
+
+  await configureArchiveView("d4-database", dataSource.id, operations);
+  assert.equal(views.get("main").name, "Alle");
+  assert.equal(views.get("vacation").name, "Urlaub");
+  assert.equal(calls.updates[0].id, "main");
+  assert.equal(calls.updates[0].payload.name, "Alle");
+  assert.equal(calls.creates.length, 0);
+
+  await configureArchiveView("d4-database", dataSource.id, operations);
+  assert.equal(calls.updates[1].id, "main");
+  assert.equal(views.size, 2);
+});
+
+test("two plausible main D4 views fail closed instead of renaming the wrong one", async () => {
+  const { dataSource, views, operations } = vacationViewFixture();
+  views.set("all", {
+    id: "all", name: "Alle", type: "table", data_source_id: dataSource.id,
+  });
+  await assert.rejects(
+    () => archivePrimaryTableView("d4-database", dataSource.id, operations),
+    /ambiguous main archive table views/,
+  );
 });

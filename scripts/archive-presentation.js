@@ -23,6 +23,7 @@ const {
 } = require("./database-presentation");
 
 const ARCHIVE_DATABASE_TITLE = "Archiv";
+const ARCHIVE_ALL_VIEW_TITLE = "Alle";
 const ARCHIVE_VACATION_VIEW_TITLE = "Urlaub";
 const D4_VISIBLE_COLUMNS = ["Wochentag", "Datum", "Standort", "Stunden"];
 
@@ -99,7 +100,12 @@ async function archivePrimaryTableView(databaseId, dataSourceId, operations = {}
   const candidates = views.filter((view) =>
     view.type === "table" && view.data_source_id === dataSourceId &&
     view.name !== ARCHIVE_VACATION_VIEW_TITLE);
+  const allViews = candidates.filter((view) => view.name === ARCHIVE_ALL_VIEW_TITLE);
   const defaults = candidates.filter((view) => view.name === "Default view");
+  if (allViews.length > 1 || defaults.length > 1 || (allViews.length && defaults.length)) {
+    throw new Error(`D4 database ${databaseId} has ambiguous main archive table views`);
+  }
+  if (allViews.length === 1) return allViews[0];
   if (defaults.length === 1) return defaults[0];
   if (candidates.length === 1) return candidates[0];
   throw new Error(
@@ -200,10 +206,12 @@ async function ensureArchiveSchema(dataSourceId) {
   return dataSource;
 }
 
-async function configureArchiveView(databaseId, dataSourceId) {
-  const dataSource = await ensureArchiveSchema(dataSourceId);
-  const view = await archivePrimaryTableView(databaseId, dataSourceId);
-  await updateView(view.id, archiveViewPayload(dataSource));
+async function configureArchiveView(databaseId, dataSourceId, operations = {}) {
+  const ensureSchema = operations.ensureArchiveSchema || ensureArchiveSchema;
+  const update = operations.updateView || updateView;
+  const dataSource = await ensureSchema(dataSourceId);
+  const view = await archivePrimaryTableView(databaseId, dataSourceId, operations);
+  await update(view.id, { name: ARCHIVE_ALL_VIEW_TITLE, ...archiveViewPayload(dataSource) });
 }
 
 async function ensureArchivePresentation(databaseId, dataSourceId) {
@@ -213,6 +221,7 @@ async function ensureArchivePresentation(databaseId, dataSourceId) {
 
 module.exports = {
   ARCHIVE_DATABASE_TITLE,
+  ARCHIVE_ALL_VIEW_TITLE,
   ARCHIVE_VACATION_VIEW_TITLE,
   ARCHIVE_MONTH_FORMULA,
   ARCHIVE_MONTH_PROPERTY,

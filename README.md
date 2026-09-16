@@ -14,7 +14,7 @@ Employee Front-ends (management only)
     ├── Aktueller Monat — inline, current-month table
     ├── ─── page divider ───
     ├── Genommene Urlaubstage bis Ende letzten Monats — linked D4 number chart
-    └── Archiv — inline archive database with main table and Urlaub view
+    └── Archiv — inline archive database with Alle and Urlaub views
 ```
 
 The automation prepares pages and records invite readiness. It intentionally does **not** call a browser, invite guests, or change Notion sharing permissions: those actions are not part of the public Notion API and must remain a deliberate management step.
@@ -24,7 +24,7 @@ The automation prepares pages and records invite readiness. It intentionally doe
 For every future worker, onboarding sets the database and data-source titles exactly to **`Aktueller Monat`** and **`Archiv`**. It configures the automatically created default table views without creating extra views:
 
 - **Aktueller Monat:** only `Wochentag`, `Datum`, `Standort`, and `Stunden`; sorted by `Datum` ascending, with no date filter.
-- **Archiv:** the main table is sorted by `Datum` descending and grouped newest-first by derived formula `Monat = formatDate(prop("Datum"), "YYYY-MM")`; `Sync Key` and the technical `Monat` property are hidden. Onboarding also creates or recovers a second table view named **`Urlaub`** on the *same* D4 database. It filters `Standort = Urlaub`, sorts days by `Datum` descending, and groups directly by the `Datum` year with newest years first. Neither view has a hard-coded year; later rollovers appear in the right year automatically. The extra view creates no additional archive rows or database.
+- **Archiv:** onboarding renames the existing default table view to **`Alle`**. It is sorted by `Datum` descending and grouped newest-first by derived formula `Monat = formatDate(prop("Datum"), "YYYY-MM")`; `Sync Key` and the technical `Monat` property are hidden. Onboarding also creates or recovers a second table view named **`Urlaub`** on the *same* D4 database. It filters `Standort = Urlaub`, sorts days by `Datum` descending, and groups directly by the `Datum` year with newest years first. Neither view has a hard-coded year; later rollovers appear in the right year automatically. The extra view creates no additional archive rows or database.
 - **Genommene Urlaubstage bis Ende letzten Monats:** a small linked D4 number chart on the worker page, placed between D3 and D4. Its filter covers January 1 through December 31 of the current Berlin calendar year. Because D4 contains only completed months, the displayed count is through the end of the prior month. It uses the existing D4 data source, creates no extra time-entry store, and rollover only updates the filter when the calendar year changes.
 
 Notion's public API can show or hide the generated number-chart label, but cannot set that label's text (for example, replacing `Count all`) or hide the linked database view name. Those two display options require a manual Notion UI adjustment if desired.
