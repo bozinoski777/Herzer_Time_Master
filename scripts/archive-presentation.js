@@ -45,7 +45,7 @@ function archiveViewPayload(dataSource) {
       properties: viewProperties(
         dataSource,
         D4_VISIBLE_COLUMNS,
-        ["Sync Key", ARCHIVE_MONTH_PROPERTY],
+        ["Sync Key", "Source Page ID", ARCHIVE_MONTH_PROPERTY],
       ),
       group_by: {
         type: "formula",
@@ -78,7 +78,7 @@ function archiveVacationViewPayload(dataSource) {
       properties: viewProperties(
         dataSource,
         D4_VISIBLE_COLUMNS,
-        ["Sync Key", ARCHIVE_MONTH_PROPERTY],
+        ["Sync Key", "Source Page ID", ARCHIVE_MONTH_PROPERTY],
       ),
       group_by: {
         type: "date",
@@ -183,6 +183,11 @@ async function ensureArchiveSchema(dataSourceId) {
     throw new Error(`D4 ${dataSourceId} property "Sync Key" is ${syncKey.type}, expected rich_text`);
   }
 
+  const sourcePageId = dataSource.properties?.["Source Page ID"];
+  if (sourcePageId && sourcePageId.type !== "rich_text") {
+    throw new Error(`D4 ${dataSourceId} property "Source Page ID" is ${sourcePageId.type}, expected rich_text`);
+  }
+
   const month = dataSource.properties?.[ARCHIVE_MONTH_PROPERTY];
   if (month && month.type !== "formula") {
     throw new Error(
@@ -193,6 +198,7 @@ async function ensureArchiveSchema(dataSourceId) {
   const additions = {};
   const metadata = archiveMetadataProperties();
   if (!syncKey) additions["Sync Key"] = metadata["Sync Key"];
+  if (!sourcePageId) additions["Source Page ID"] = metadata["Source Page ID"];
   if (!month || month.formula?.expression !== ARCHIVE_MONTH_FORMULA) {
     additions[ARCHIVE_MONTH_PROPERTY] = metadata[ARCHIVE_MONTH_PROPERTY];
   }

@@ -77,7 +77,7 @@ async function main() {
     ),
     textBlock(
       "bulleted_list_item",
-      "It copies each completed D3 day to the worker’s D4 archive using Worker Key|YYYY-MM-DD, preserving weekday, date, hours, and the worker’s single Standort/work choice, including historic locations that are no longer active.",
+      "It copies each completed D3 entry to the worker’s D4 archive using Worker Key|YYYY-MM-DD|D3 Page ID, so two locations recorded on one date remain separate. It preserves weekday, date, hours, and Standort/work choice, including historic locations that are no longer active.",
     ),
     textBlock(
       "bulleted_list_item",

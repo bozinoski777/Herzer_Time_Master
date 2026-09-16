@@ -1,9 +1,10 @@
 "use strict";
 
 /**
- * A worker chooses one value per day.  A value is either an active Standort
+ * A worker chooses one value per D3 entry. A value is either an active Standort
  * or one of these non-location day choices; keeping them in one select avoids
- * asking workers to edit two selects for the same day.
+ * asking workers to edit two selects for the same entry. Distinct entries may
+ * share a date when the worker splits hours between locations.
  */
 const WORK_TYPE_OPTIONS = [
   { name: "Teil-Tag", color: "gray" },

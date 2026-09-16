@@ -10,10 +10,12 @@ process.env.D7_DATA_SOURCE_ID = "test-d7";
 process.env.D8_DATA_SOURCE_ID = "test-d8";
 
 const {
+  archiveProperties,
   berlinDateParts,
   buildRolloverManifest,
   completedSourceMonths,
   historyStandortAdditions,
+  legacyD4MigrationPlan,
   manifestSourceEntries,
   monthDays,
   monthForDate,
@@ -21,6 +23,7 @@ const {
   parseRolloverManifest,
   sourceSnapshotMatches,
   staleD4Rows,
+  validateD3Rows,
   validateRolloverRegistry,
   verifyD4ExactMonth,
 } = require("../scripts/month-rollover");
@@ -29,6 +32,7 @@ const {
   augsburgHolidayName,
   augsburgPaidHolidayName,
 } = require("../scripts/augsburg-holidays");
+const { daySyncKey } = require("../scripts/day-sync-key");
 
 test("Berlin calendar date crosses a UTC month boundary correctly", () => {
   assert.deepEqual(
@@ -131,7 +135,22 @@ test("rollover detects a new row added to the verified source month", () => {
   );
 });
 
-function rolloverDay(id, isoDate, { workerKey, hours = 8 } = {}) {
+test("rollover accepts two distinct D3 pages on one calendar date", () => {
+  const regular = rolloverDay("regular-page", "2026-09-16");
+  const partDay = rolloverDay("teil-tag-page", "2026-09-16");
+  const worker = { name: "Ada" };
+  assert.deepEqual(
+    validateD3Rows([regular, partDay], worker, "2026-10")
+      .map((entry) => entry.row.id),
+    ["regular-page", "teil-tag-page"],
+  );
+  assert.throws(
+    () => validateD3Rows([regular, regular], worker, "2026-10"),
+    /duplicate page ID/,
+  );
+});
+
+function rolloverDay(id, isoDate, { workerKey, sourcePageId, hours = 8 } = {}) {
   return {
     id,
     properties: {
@@ -140,7 +159,12 @@ function rolloverDay(id, isoDate, { workerKey, hours = 8 } = {}) {
       Stunden: { number: hours },
       Standort: { select: { name: "Berlin" } },
       ...(workerKey
-        ? { "Sync Key": { rich_text: [{ plain_text: `${workerKey}|${isoDate}` }] } }
+        ? {
+            "Sync Key": { rich_text: [{ plain_text: sourcePageId
+              ? daySyncKey(workerKey, isoDate, sourcePageId)
+              : `${workerKey}|${isoDate}` }] },
+            "Source Page ID": { rich_text: sourcePageId ? [{ plain_text: sourcePageId }] : [] },
+          }
         : {}),
     },
   };
@@ -162,7 +186,9 @@ test("D4 retry removes only the prior same-worker/month row after a D3 date edit
     ["d4-old-date"],
   );
 
-  const repaired = rolloverDay("d4-new-date", "2026-09-02", { workerKey: "worker-a" });
+  const repaired = rolloverDay("d4-new-date", "2026-09-02", {
+    workerKey: "worker-a", sourcePageId: "d3-edited",
+  });
   assert.equal(
     verifyD4ExactMonth(worker, "2026-09", freshSource, [repaired, otherMonth]),
     true,
@@ -173,7 +199,9 @@ test("D4 retry removes a deleted D3 day and exact verification rejects residual 
   const worker = { name: "Ada", workerKey: "worker-a" };
   const source = rolloverDay("d3-kept", "2026-09-01");
   const freshSource = [sourceEntry(source)];
-  const kept = rolloverDay("d4-kept", "2026-09-01", { workerKey: "worker-a" });
+  const kept = rolloverDay("d4-kept", "2026-09-01", {
+    workerKey: "worker-a", sourcePageId: "d3-kept",
+  });
   const deleted = rolloverDay("d4-deleted", "2026-09-02", { workerKey: "worker-a" });
 
   assert.deepEqual(
@@ -185,6 +213,70 @@ test("D4 retry removes a deleted D3 day and exact verification rejects residual 
     /exact-set verification failed/,
   );
   assert.equal(verifyD4ExactMonth(worker, "2026-09", freshSource, [kept]), true);
+});
+
+test("D4 keeps two same-date Teil-Tag entries independently on rollover retries", () => {
+  const worker = { name: "Ada", workerKey: "worker-a" };
+  const first = rolloverDay("regular-page", "2026-09-16", { hours: 4 });
+  const second = rolloverDay("teil-tag-page", "2026-09-16", { hours: 3 });
+  second.properties.Wochentag = { title: [{ plain_text: "Teil-Tag" }] };
+  const source = [sourceEntry(first), sourceEntry(second)];
+  assert.notEqual(
+    archiveProperties(worker, first).syncKey,
+    archiveProperties(worker, second).syncKey,
+  );
+  const archive = [
+    rolloverDay("d4-regular", "2026-09-16", {
+      workerKey: "worker-a", sourcePageId: "regular-page", hours: 4,
+    }),
+    rolloverDay("d4-part", "2026-09-16", {
+      workerKey: "worker-a", sourcePageId: "teil-tag-page", hours: 3,
+    }),
+  ];
+  archive[1].properties.Wochentag = second.properties.Wochentag;
+  assert.deepEqual(staleD4Rows(worker, "2026-09", source, archive), []);
+  assert.equal(verifyD4ExactMonth(worker, "2026-09", source, archive), true);
+
+  const orphan = rolloverDay("d4-orphan", "2026-09-17", {
+    workerKey: "worker-a", sourcePageId: "deleted-page",
+  });
+  assert.deepEqual(
+    staleD4Rows(worker, "2026-09", source, [...archive, orphan]).map((row) => row.id),
+    ["d4-orphan"],
+  );
+});
+
+test("an ambiguous legacy D4 date-only row is never assigned to either same-date source", () => {
+  const worker = { name: "Ada", workerKey: "worker-a" };
+  const source = [
+    sourceEntry(rolloverDay("regular-page", "2026-09-16")),
+    sourceEntry(rolloverDay("teil-tag-page", "2026-09-16")),
+  ];
+  const legacy = rolloverDay("d4-legacy", "2026-09-16", { workerKey: "worker-a" });
+  assert.throws(
+    () => staleD4Rows(worker, "2026-09", source, [legacy]),
+    /legacy D4 row .* multiple D3 pages use 2026-09-16/,
+  );
+});
+
+test("an old saved rollover checkpoint upgrades its unambiguous D4 row in place", () => {
+  const worker = { name: "Ada", workerKey: "worker-a" };
+  const source = [sourceEntry(rolloverDay("regular-page", "2026-09-16"))];
+  const oldCopy = rolloverDay("d4-legacy", "2026-09-16", { workerKey: "worker-a" });
+  const migrations = legacyD4MigrationPlan(worker, "2026-09", source, [oldCopy]);
+  assert.equal(migrations.length, 1);
+  assert.equal(migrations[0].row.id, "d4-legacy");
+  assert.deepEqual(migrations[0].properties["Sync Key"], {
+    rich_text: [{ type: "text", text: { content: "worker-a|2026-09-16|regular-page" } }],
+  });
+  assert.deepEqual(migrations[0].properties["Source Page ID"], {
+    rich_text: [{ type: "text", text: { content: "regular-page" } }],
+  });
+  assert.deepEqual(legacyD4MigrationPlan(worker, "2026-09", source, [
+    rolloverDay("d4-upgraded", "2026-09-16", {
+      workerKey: "worker-a", sourcePageId: "regular-page",
+    }),
+  ]), []);
 });
 
 test("an uncheckpointed empty D3 month can reconcile a genuinely empty archive set", () => {
@@ -253,6 +345,25 @@ test("a persisted rollover manifest preserves the full pre-archive source set", 
       d4DataSourceId: "another-d4-source",
     }),
     /D3\/D4 routing/,
+  );
+});
+
+test("the rollover checkpoint accepts same-date pages but rejects duplicate page IDs", () => {
+  const worker = {
+    name: "Ada", workerKey: "worker-a",
+    d3DatabaseId: "d3-db-a", d3DataSourceId: "d3-source-a",
+    d4DatabaseId: "d4-db-a", d4DataSourceId: "d4-source-a",
+  };
+  const entries = [
+    sourceEntry(rolloverDay("regular-page", "2026-09-16")),
+    sourceEntry(rolloverDay("teil-tag-page", "2026-09-16")),
+  ];
+  const manifest = buildRolloverManifest(worker, "2026-09", entries);
+  assert.equal(parseRolloverManifest(JSON.stringify(manifest), worker).days.length, 2);
+  manifest.days[1].id = manifest.days[0].id;
+  assert.throws(
+    () => parseRolloverManifest(JSON.stringify(manifest), worker),
+    /duplicate page IDs/,
   );
 });
 

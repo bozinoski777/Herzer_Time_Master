@@ -16,6 +16,7 @@ const DAY_PROPERTY_TYPES = Object.freeze({
 const D4_PROPERTY_TYPES = Object.freeze({
   ...DAY_PROPERTY_TYPES,
   "Sync Key": "rich_text",
+  "Source Page ID": "rich_text",
   [ARCHIVE_MONTH_PROPERTY]: "formula",
 });
 
@@ -31,6 +32,7 @@ function dayDatabaseProperties(standorte) {
 function archiveMetadataProperties() {
   return {
     "Sync Key": { rich_text: {} },
+    "Source Page ID": { rich_text: {} },
     [ARCHIVE_MONTH_PROPERTY]: {
       formula: { expression: ARCHIVE_MONTH_FORMULA },
     },

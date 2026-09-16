@@ -8,7 +8,7 @@
  *   D3 rows -> D4 + D7 upsert -> both verified -> archive D3 source pages
  *
  * No D3 page is hard-deleted. A retry can always reuse its deterministic D4
- * Sync Key (Worker Key|YYYY-MM-DD) before attempting the next stage.
+ * Sync Key (Worker Key|YYYY-MM-DD|D3 Page ID) before attempting the next stage.
  */
 
 const {
@@ -49,8 +49,13 @@ const {
   updateDataSourceSelect,
 } = require("./select-options");
 const { updateVacationChartForRollover } = require("./frontend-presentation");
-const { ensureArchiveSchema } = require("./archive-presentation");
+const {
+  configureArchiveView,
+  ensureArchiveSchema,
+  ensureArchiveVacationView,
+} = require("./archive-presentation");
 const { assertDayDataSource } = require("./day-schemas");
+const { daySyncKey, parseDaySyncKey } = require("./day-sync-key");
 const { HOLIDAY_HOURS, augsburgPaidHolidayName } = require("./augsburg-holidays");
 const {
   syncWorkerToManagement,
@@ -401,9 +406,13 @@ async function rebuildD3StandortOptions(dataSourceId, activeNames, currentRows) 
 }
 
 function validateD3Rows(rows, worker, targetMonth) {
-  const dates = new Set();
+  const pageIds = new Set();
   const normalized = [];
   for (const row of rows) {
+    if (!row.id || pageIds.has(row.id)) {
+      throw new Error(`${worker.name}: D3 contains a missing or duplicate page ID`);
+    }
+    pageIds.add(row.id);
     const dateProperty = row.properties.Datum?.date;
     if (dateProperty?.end || dateProperty?.time_zone) {
       throw new Error(
@@ -412,15 +421,11 @@ function validateD3Rows(rows, worker, targetMonth) {
     }
     const sourceDate = dateStart(row);
     const sourceMonth = monthForDate(sourceDate);
-    if (dates.has(sourceDate)) {
-      throw new Error(`${worker.name}: D3 has more than one row for ${sourceDate}`);
-    }
     if (sourceMonth > targetMonth) {
       throw new Error(
         `${worker.name}: D3 contains future month ${sourceMonth}; refusing to archive or hide it while target is ${targetMonth}`,
       );
     }
-    dates.add(sourceDate);
     normalized.push({ row, sourceDate, sourceMonth });
   }
   return normalized;
@@ -429,7 +434,7 @@ function validateD3Rows(rows, worker, targetMonth) {
 function archiveProperties(worker, sourceRow) {
   const properties = sourceRow.properties;
   const sourceDate = dateStart(sourceRow);
-  const syncKey = `${worker.workerKey}|${sourceDate}`;
+  const syncKey = daySyncKey(worker.workerKey, sourceDate, sourceRow.id);
   return {
     syncKey,
     properties: {
@@ -438,6 +443,7 @@ function archiveProperties(worker, sourceRow) {
       Stunden: { number: properties.Stunden?.number ?? null },
       Standort: select(properties.Standort?.select?.name || ""),
       "Sync Key": richText(syncKey),
+      "Source Page ID": richText(sourceRow.id),
     },
   };
 }
@@ -478,7 +484,9 @@ function dayValuesMatch(actualRow, expectedRow) {
 
 function archiveValuesMatch(archiveRow, worker, sourceRow) {
   const expected = archiveProperties(worker, sourceRow);
-  return rowText(archiveRow, "Sync Key") === expected.syncKey && dayValuesMatch(archiveRow, sourceRow);
+  return rowText(archiveRow, "Sync Key") === expected.syncKey &&
+    rowText(archiveRow, "Source Page ID") === sourceRow.id &&
+    dayValuesMatch(archiveRow, sourceRow);
 }
 
 function archiveSourceMonth(sourceEntries, expectedSourceMonth) {
@@ -494,20 +502,20 @@ function archiveSourceMonth(sourceEntries, expectedSourceMonth) {
 
 /**
  * Each D4 is private to one worker. If either Datum or Sync Key points at the
- * source month, both must prove the same worker/date; blank or foreign keys are
- * contamination and fail closed instead of being hidden from exact checks.
+ * source month, both must prove the same worker/date. Source identity comes
+ * from the qualified key and may also be stored in the hidden D4 property.
  */
 function scopedD4Identity(row, worker, sourceMonth) {
   const syncKey = rowText(row, "Sync Key");
   const prefix = `${worker.workerKey}|`;
   const rowDate = dateStart(row);
   const hasWorkerPrefix = syncKey.startsWith(prefix);
-  const keyDate = hasWorkerPrefix ? syncKey.slice(prefix.length) : "";
-  const keyIsValid = hasWorkerPrefix && validIsoDate(keyDate);
-  const keyInSourceMonth = keyIsValid && keyDate.slice(0, 7) === sourceMonth;
+  const parsedKey = hasWorkerPrefix ? parseDaySyncKey(syncKey, worker.workerKey) : null;
+  const keyDate = parsedKey?.date || "";
+  const keyInSourceMonth = keyDate.slice(0, 7) === sourceMonth;
   const rowInSourceMonth = validIsoDate(rowDate) && rowDate.slice(0, 7) === sourceMonth;
 
-  if (hasWorkerPrefix && !keyIsValid) {
+  if (hasWorkerPrefix && !parsedKey) {
     throw new Error(
       `${worker.name}: D4 row ${row.id} has an invalid Sync Key; refusing automatic cleanup`,
     );
@@ -519,7 +527,19 @@ function scopedD4Identity(row, worker, sourceMonth) {
           "refusing automatic cleanup",
       );
     }
-    return { row, syncKey, keyDate, rowDate };
+    const storedSourcePageId = rowText(row, "Source Page ID");
+    if (parsedKey.sourcePageId && storedSourcePageId &&
+        parsedKey.sourcePageId !== storedSourcePageId) {
+      throw new Error(
+        `${worker.name}: D4 row ${row.id} has conflicting Source Page ID ownership; ` +
+          "refusing automatic cleanup",
+      );
+    }
+    return {
+      row, syncKey, keyDate, rowDate,
+      sourcePageId: parsedKey.sourcePageId || storedSourcePageId,
+      legacy: !parsedKey.sourcePageId,
+    };
   }
   if (hasWorkerPrefix && keyDate !== rowDate) {
     throw new Error(
@@ -530,6 +550,36 @@ function scopedD4Identity(row, worker, sourceMonth) {
   return null;
 }
 
+function sourceEntryForArchiveIdentity(identity, worker, entriesById, entriesByDate) {
+  if (identity.sourcePageId) {
+    const entry = entriesById.get(identity.sourcePageId);
+    return entry?.sourceDate === identity.rowDate ? entry : null;
+  }
+  const sameDate = entriesByDate.get(identity.rowDate) || [];
+  if (sameDate.length > 1) {
+    throw new Error(
+      `${worker.name}: legacy D4 row ${identity.row.id} has no Source Page ID and ` +
+        `multiple D3 pages use ${identity.rowDate}; resolve this ambiguous old archive row manually`,
+    );
+  }
+  return sameDate[0] || null;
+}
+
+function indexSourceEntries(sourceEntries) {
+  const byId = new Map();
+  const byDate = new Map();
+  for (const entry of sourceEntries) {
+    if (!entry.row.id || byId.has(entry.row.id)) {
+      throw new Error("D3 archive transaction contains duplicate or missing page IDs");
+    }
+    byId.set(entry.row.id, entry);
+    const sameDate = byDate.get(entry.sourceDate) || [];
+    sameDate.push(entry);
+    byDate.set(entry.sourceDate, sameDate);
+  }
+  return { byId, byDate };
+}
+
 /**
  * Find only stale rows that can be proven to belong to the worker/month being
  * retried. This repairs a failed rollover after a D3 date edit or deletion
@@ -537,15 +587,47 @@ function scopedD4Identity(row, worker, sourceMonth) {
  */
 function staleD4Rows(worker, sourceMonth, sourceEntries, archiveRows) {
   archiveSourceMonth(sourceEntries, sourceMonth);
-  const expectedPairs = new Set(
-    sourceEntries.map((entry) => `${worker.workerKey}|${entry.sourceDate}\u0000${entry.sourceDate}`),
-  );
-
-  return archiveRows
+  const sources = indexSourceEntries(sourceEntries);
+  const identities = archiveRows
     .map((row) => scopedD4Identity(row, worker, sourceMonth))
-    .filter(Boolean)
-    .filter((identity) => !expectedPairs.has(`${identity.syncKey}\u0000${identity.rowDate}`))
+    .filter(Boolean);
+  const qualifiedSources = new Set(
+    identities.filter((identity) => !identity.legacy).map((identity) => identity.sourcePageId),
+  );
+  return identities
+    .filter((identity) => {
+      const source = sourceEntryForArchiveIdentity(
+        identity, worker, sources.byId, sources.byDate,
+      );
+      return !source || (identity.legacy && qualifiedSources.has(source.row.id));
+    })
     .map((identity) => identity.row);
+}
+
+function legacyD4MigrationPlan(worker, sourceMonth, sourceEntries, archiveRows) {
+  const stale = staleD4Rows(worker, sourceMonth, sourceEntries, archiveRows);
+  if (stale.length > 0) {
+    throw new Error(
+      `${worker.name}: D4 has ${stale.length} stale ${sourceMonth} row(s) at the ` +
+        "saved rollover checkpoint; D3 remains unchanged",
+    );
+  }
+  const sources = indexSourceEntries(sourceEntries);
+  const seenSources = new Set();
+  const migrations = [];
+  for (const row of archiveRows) {
+    const identity = scopedD4Identity(row, worker, sourceMonth);
+    if (!identity?.legacy) continue;
+    const source = sourceEntryForArchiveIdentity(
+      identity, worker, sources.byId, sources.byDate,
+    );
+    if (!source || seenSources.has(source.row.id)) {
+      throw new Error(`${worker.name}: D4 legacy rows have ambiguous ownership; D3 remains unchanged`);
+    }
+    seenSources.add(source.row.id);
+    migrations.push({ row, ...archiveProperties(worker, source.row) });
+  }
+  return migrations;
 }
 
 /** Exact D4 barrier for the one worker/month currently being archived. */
@@ -555,13 +637,7 @@ function verifyD4ExactMonth(worker, sourceMonth, sourceEntries, archiveRows) {
     .map((row) => scopedD4Identity(row, worker, sourceMonth))
     .filter(Boolean)
     .map((identity) => identity.row);
-  const expectedKeys = new Set(
-    sourceEntries.map((entry) => `${worker.workerKey}|${entry.sourceDate}`),
-  );
-
-  if (expectedKeys.size !== sourceEntries.length) {
-    throw new Error(`${worker.name}: D3 has duplicate dates in ${sourceMonth}`);
-  }
+  indexSourceEntries(sourceEntries);
   if (scopedRows.length !== sourceEntries.length) {
     throw new Error(
       `${worker.name}: D4 exact-set verification failed for ${sourceMonth}; ` +
@@ -571,7 +647,7 @@ function verifyD4ExactMonth(worker, sourceMonth, sourceEntries, archiveRows) {
 
   const verifiedIndex = d4RowsByKeyAndDate(scopedRows);
   for (const entry of sourceEntries) {
-    const expectedKey = `${worker.workerKey}|${entry.sourceDate}`;
+    const expectedKey = daySyncKey(worker.workerKey, entry.sourceDate, entry.row.id);
     const archiveRow = verifiedIndex.byKey.get(expectedKey);
     if (!archiveRow || !archiveValuesMatch(archiveRow, worker, entry.row)) {
       throw new Error(`${worker.name}: D4 verification failed for ${expectedKey}; D3 remains unchanged`);
@@ -629,9 +705,28 @@ async function reconcileWorkerD8Relations(worker) {
   console.log(`${worker.name}: D8 relation barrier verified (${related} D7 relation(s) updated).`);
 }
 
+async function refreshArchiveViews(worker) {
+  await configureArchiveView(worker.d4DatabaseId, worker.d4DataSourceId);
+  const dataSource = await getDataSource(worker.d4DataSourceId);
+  if ((dataSource.properties?.Standort?.select?.options || [])
+    .some((option) => option.name === "Urlaub")) {
+    await ensureArchiveVacationView(worker.d4DatabaseId, worker.d4DataSourceId);
+  }
+}
+
 async function verifyManifestBarriers(worker, manifest) {
   const sourceEntries = manifestSourceEntries(manifest);
   await ensureArchiveSchema(worker.d4DataSourceId);
+  await refreshArchiveViews(worker);
+  const existingArchiveRows = await queryAll(worker.d4DataSourceId);
+  // Checkpoints written before source-qualified keys existed must remain
+  // resumable. Their date-only D4 rows can be upgraded only when the source
+  // date identifies exactly one D3 page; otherwise fail closed.
+  for (const migration of legacyD4MigrationPlan(
+    worker, manifest.sourceMonth, sourceEntries, existingArchiveRows,
+  )) {
+    await updatePage(migration.row.id, migration.properties);
+  }
   verifyD4ExactMonth(
     worker,
     manifest.sourceMonth,
@@ -765,6 +860,9 @@ async function archiveMonth(worker, sourceMonth, sourceEntries, targetMonth) {
     "Standort",
     selectNamesFromRows(sourceEntries.map((entry) => entry.row), "Standort"),
   );
+  // Existing D4 databases gain hidden Source Page ID metadata on their first
+  // upgraded rollover. Refresh both worker-facing views before writing rows.
+  await refreshArchiveViews(worker);
   const initialArchiveRows = await queryAll(worker.d4DataSourceId);
   const staleRows = staleD4Rows(worker, sourceMonth, sourceEntries, initialArchiveRows);
   for (const staleRow of staleRows) await archivePage(staleRow.id);
@@ -775,36 +873,44 @@ async function archiveMonth(worker, sourceMonth, sourceEntries, targetMonth) {
   }
   const staleIds = new Set(staleRows.map((row) => row.id));
   const index = d4RowsByKeyAndDate(initialArchiveRows.filter((row) => !staleIds.has(row.id)));
+  const sources = indexSourceEntries(sourceEntries);
 
   for (const entry of sourceEntries) {
     const built = archiveProperties(worker, entry.row);
     const keyed = index.byKey.get(built.syncKey);
     const sameDate = index.byDate.get(entry.sourceDate) || [];
 
-    if (sameDate.length > 1) {
-      throw new Error(`${worker.name}: D4 has multiple rows for ${entry.sourceDate}; refusing an ambiguous archive upsert`);
-    }
     let target = keyed;
     if (target && dateStart(target) !== entry.sourceDate) {
       throw new Error(`${worker.name}: D4 Sync Key ${built.syncKey} points to a different date`);
     }
-    if (!target && sameDate.length === 1) {
-      const existingKey = rowText(sameDate[0], "Sync Key");
-      if (existingKey && existingKey !== built.syncKey) {
-        throw new Error(`${worker.name}: D4 date ${entry.sourceDate} belongs to a different Sync Key`);
+    if (!target) {
+      const legacy = sameDate.filter((row) => {
+        const parsed = parseDaySyncKey(rowText(row, "Sync Key"), worker.workerKey);
+        return parsed && !parsed.sourcePageId &&
+          (!rowText(row, "Source Page ID") || rowText(row, "Source Page ID") === entry.row.id);
+      });
+      if (legacy.length > 1 ||
+          (legacy.length === 1 && !rowText(legacy[0], "Source Page ID") &&
+            sources.byDate.get(entry.sourceDate).length > 1)) {
+        throw new Error(
+          `${worker.name}: D4 has an ambiguous legacy row for ${entry.sourceDate}; ` +
+            "D3 remains unchanged",
+        );
       }
-      target = sameDate[0];
+      target = legacy[0];
     }
 
     if (target) {
       await updatePage(target.id, built.properties);
+      index.byKey.set(built.syncKey, target);
     } else {
       target = await createPage(
         { type: "data_source_id", data_source_id: worker.d4DataSourceId },
         built.properties,
       );
       index.byKey.set(built.syncKey, target);
-      index.byDate.set(entry.sourceDate, [target]);
+      index.byDate.set(entry.sourceDate, [...sameDate, target]);
     }
   }
 
@@ -1163,6 +1269,7 @@ module.exports = {
   buildRolloverManifest,
   completedSourceMonths,
   historyStandortAdditions,
+  legacyD4MigrationPlan,
   manifestSourceEntries,
   monthDays,
   monthForDate,
@@ -1170,6 +1277,7 @@ module.exports = {
   resolveRunConfiguration,
   sourceSnapshotMatches,
   staleD4Rows,
+  validateD3Rows,
   validateRolloverRegistry,
   validIsoDate,
   verifyD4ExactMonth,

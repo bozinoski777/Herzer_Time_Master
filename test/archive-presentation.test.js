@@ -30,6 +30,7 @@ function archiveDataSource(overrides = {}) {
         select: { options: [{ name: "Urlaub" }, { name: "Schützenstr. 70" }] },
       },
       "Sync Key": { id: "sync-key", name: "Sync Key", type: "rich_text" },
+      "Source Page ID": { id: "source-id", name: "Source Page ID", type: "rich_text" },
       Monat: { id: "month", name: "Monat", type: "formula" },
       ...overrides,
     },
@@ -47,10 +48,12 @@ test("archive presentation exports the canonical title and schema metadata", () 
     Stunden: "number",
     Standort: "select",
     "Sync Key": "rich_text",
+    "Source Page ID": "rich_text",
     Monat: "formula",
   });
   assert.deepEqual(archiveSchemaProperties(), {
     "Sync Key": { rich_text: {} },
+    "Source Page ID": { rich_text: {} },
     Monat: { formula: { expression: ARCHIVE_MONTH_FORMULA } },
   });
 });
@@ -76,6 +79,7 @@ test("archive table payload sorts newest first, groups by month, and hides techn
     { property_id: "location", visible: true },
     { property_id: "hours", visible: true },
     { property_id: "sync-key", visible: false },
+    { property_id: "source-id", visible: false },
     { property_id: "month", visible: false },
   ]);
 });

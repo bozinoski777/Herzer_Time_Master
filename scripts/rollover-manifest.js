@@ -92,7 +92,6 @@ function parseRolloverManifest(value, worker) {
   }
 
   const ids = new Set();
-  const dates = new Set();
   for (const day of manifest.days) {
     if (
       !day ||
@@ -106,11 +105,10 @@ function parseRolloverManifest(value, worker) {
     ) {
       throw new Error(`${worker.name}: Rollover Manifest contains an invalid day snapshot`);
     }
-    if (ids.has(day.id) || dates.has(day.date)) {
-      throw new Error(`${worker.name}: Rollover Manifest contains duplicate page IDs or dates`);
+    if (ids.has(day.id)) {
+      throw new Error(`${worker.name}: Rollover Manifest contains duplicate page IDs`);
     }
     ids.add(day.id);
-    dates.add(day.date);
   }
   return manifest;
 }

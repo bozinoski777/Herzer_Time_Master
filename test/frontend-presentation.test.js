@@ -24,6 +24,7 @@ function dataSource() {
       Standort: { id: "site", name: "Standort", type: "select" },
       Stunden: { id: "hours", name: "Stunden", type: "number" },
       "Sync Key": { id: "sync", name: "Sync Key", type: "rich_text" },
+      "Source Page ID": { id: "source-id", name: "Source Page ID", type: "rich_text" },
       Monat: { id: "month", name: "Monat", type: "formula" },
       "Worker Key": { id: "worker-key", name: "Worker Key", type: "rich_text" },
       "D1 Record ID": { id: "d1-id", name: "D1 Record ID", type: "rich_text" },
@@ -47,6 +48,7 @@ test("D3 view has no date filter and shows worker columns in ascending date orde
 test("D4 groups by formula month, sorts newest first, and hides technical fields", () => {
   assert.deepEqual(archiveSchemaProperties(), {
     "Sync Key": { rich_text: {} },
+    "Source Page ID": { rich_text: {} },
     Monat: { formula: { expression: ARCHIVE_MONTH_FORMULA } },
   });
 
@@ -60,6 +62,10 @@ test("D4 groups by formula month, sorts newest first, and hides technical fields
   });
   assert.equal(
     payload.configuration.properties.find((property) => property.property_id === "sync").visible,
+    false,
+  );
+  assert.equal(
+    payload.configuration.properties.find((property) => property.property_id === "source-id").visible,
     false,
   );
   assert.equal(

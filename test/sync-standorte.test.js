@@ -147,6 +147,34 @@ test("D7 Standort relation follows its selected D8 Standort, including inactive 
   ]);
 });
 
+test("same-date D7 entries link independently to their two D8 locations", () => {
+  const updates = planD7StandortRelations(
+    [
+      {
+        id: "d7-regular",
+        properties: {
+          Datum: { date: { start: "2026-09-16" } },
+          Standort: { select: { name: "Berlin" } },
+          "Standort (D8)": { relation: [] },
+        },
+      },
+      {
+        id: "d7-teil-tag",
+        properties: {
+          Datum: { date: { start: "2026-09-16" } },
+          Standort: { select: { name: "Augsburg" } },
+          "Standort (D8)": { relation: [] },
+        },
+      },
+    ],
+    [d8Row("d8-berlin", "Berlin"), d8Row("d8-augsburg", "Augsburg")],
+  );
+  assert.deepEqual(updates, [
+    { pageId: "d7-regular", relatedD8Id: "d8-berlin" },
+    { pageId: "d7-teil-tag", relatedD8Id: "d8-augsburg" },
+  ]);
+});
+
 test("D7 Standort relation refuses ambiguous duplicate D8 names", () => {
   assert.throws(
     () => planD7StandortRelations(

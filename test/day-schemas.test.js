@@ -39,6 +39,7 @@ test("day schemas expose one canonical D3 contract and an archive extension", ()
   assert.deepEqual(D4_PROPERTY_TYPES, {
     ...DAY_PROPERTY_TYPES,
     "Sync Key": "rich_text",
+    "Source Page ID": "rich_text",
     Monat: "formula",
   });
   assert.equal(Object.isFrozen(DAY_PROPERTY_TYPES), true);
@@ -74,11 +75,13 @@ test("archive schema extends the day fields with deterministic technical metadat
   assert.equal(ARCHIVE_MONTH_FORMULA, 'formatDate(prop("Datum"), "YYYY-MM")');
   assert.deepEqual(archiveMetadataProperties(), {
     "Sync Key": { rich_text: {} },
+    "Source Page ID": { rich_text: {} },
     Monat: { formula: { expression: ARCHIVE_MONTH_FORMULA } },
   });
 
   const properties = archiveDatabaseProperties(["Berlin"]);
   assert.deepEqual(properties["Sync Key"], { rich_text: {} });
+  assert.deepEqual(properties["Source Page ID"], { rich_text: {} });
   assert.deepEqual(properties.Monat, {
     formula: { expression: ARCHIVE_MONTH_FORMULA },
   });
@@ -89,6 +92,7 @@ test("day and archive validators enforce their respective property contracts", (
   const day = dataSource();
   const archive = dataSource({
     "Sync Key": { type: "rich_text" },
+    "Source Page ID": { type: "rich_text" },
     Monat: { type: "formula" },
   });
 

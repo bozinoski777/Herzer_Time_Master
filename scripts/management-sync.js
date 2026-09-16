@@ -22,6 +22,7 @@ const {
   updatePage,
 } = require("./notion");
 const { DAY_PROPERTY_TYPES } = require("./day-schemas");
+const { daySyncKey } = require("./day-sync-key");
 const { assertWorkerDataSourceReference } = require("./worker-database-references");
 
 const D3_DAY_SCHEMA = DAY_PROPERTY_TYPES;
@@ -63,8 +64,12 @@ function assertSourceRowsMatchWorkerMonth(worker, sourceRows) {
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(worker.currentMonth || "")) {
     throw new Error(`${worker.name}: D1 Current Month is invalid or missing (${worker.currentMonth || "blank"})`);
   }
-  const dates = new Set();
+  const pageIds = new Set();
   for (const row of sourceRows) {
+    if (!row.id || pageIds.has(row.id)) {
+      throw new Error(`${worker.name}: D3 contains a missing or duplicate page ID`);
+    }
+    pageIds.add(row.id);
     const datum = assertDateOnlySource(row);
     if (!datum) continue;
     if (datum.slice(0, 7) !== worker.currentMonth) {
@@ -73,10 +78,6 @@ function assertSourceRowsMatchWorkerMonth(worker, sourceRows) {
           `${worker.currentMonth}; run/fix Month Rollover before management sync`,
       );
     }
-    if (dates.has(datum)) {
-      throw new Error(`${worker.name}: D3 has more than one page for ${datum}`);
-    }
-    dates.add(datum);
   }
 }
 
@@ -121,7 +122,7 @@ function managementProperties(worker, sourcePage, syncedAt = new Date().toISOStr
   const datum = assertDateOnlySource(sourcePage);
   if (!datum) throw new Error(`D3 page ${sourcePage.id} has no Datum`);
 
-  const syncKey = `${worker.workerKey}|${datum}`;
+  const syncKey = daySyncKey(worker.workerKey, datum, sourcePage.id);
   return {
     syncKey,
     properties: {
@@ -223,18 +224,16 @@ function assertResolvableSyncKeys(rows, desiredKeyBySourcePageId) {
   const groups = multiIndex(rows, (row) => rowText(row, "Sync Key"));
   for (const [syncKey, matches] of groups) {
     if (matches.length < 2) continue;
-    // A crash during a date swap can temporarily leave two current source
-    // pages on one key. It is safe to resume only when every participant is a
-    // known current source, their desired keys are unique, and exactly one of
-    // them is meant to keep this duplicated key. The normal plan then moves
-    // the other participant(s) to their desired key(s).
+    // A crash during a date swap can temporarily leave two legacy date-only
+    // keys equal. Both can be repaired if each row belongs to a different,
+    // known current D3 page with a unique source-qualified destination key.
     const desiredKeys = matches.map((row) =>
       desiredKeyBySourcePageId.get(rowText(row, "Source Page ID")),
     );
     const resolvableMove =
       desiredKeys.every(Boolean) &&
       new Set(desiredKeys).size === desiredKeys.length &&
-      desiredKeys.filter((desiredKey) => desiredKey === syncKey).length === 1;
+      new Set(matches.map((row) => rowText(row, "Source Page ID"))).size === matches.length;
     if (!resolvableMove) {
       throw new Error(`D7 contains duplicate Sync Key value ${syncKey}`);
     }
@@ -296,7 +295,8 @@ function staleManagementRows(worker, sourceRows, managementRows, reconcileMissin
 
 /**
  * Produce a deterministic reconciliation plan without making API calls.
- * Source Page ID is the durable identity, while Sync Key follows an edited date.
+ * Source Page ID is the durable identity; Sync Key also includes that ID so
+ * same-date entries cannot collide in D7 or downstream rollups.
  */
 function planManagementSync(
   worker,
@@ -315,7 +315,7 @@ function planManagementSync(
   const desiredKeyBySourcePageId = new Map(
     sourceRows
       .filter((row) => sourceDate(row))
-      .map((row) => [row.id, `${worker.workerKey}|${sourceDate(row)}`]),
+      .map((row) => [row.id, daySyncKey(worker.workerKey, sourceDate(row), row.id)]),
   );
   // Historical duplicates and unknown owners fail closed so D7/D8 can never
   // silently double-count. The sole exception is a provably resumable
@@ -468,7 +468,7 @@ function verifyManagementRows(
 
   for (const sourceRow of sourceRows) {
     if (!sourceDate(sourceRow)) continue;
-    const expectedKey = `${worker.workerKey}|${sourceDate(sourceRow)}`;
+    const expectedKey = daySyncKey(worker.workerKey, sourceDate(sourceRow), sourceRow.id);
     const keyed = bySyncKey.get(expectedKey);
     const sourced = bySourcePageId.get(sourceRow.id);
     if (!keyed || !sourced || keyed.id !== sourced.id || !managementValuesMatch(keyed, worker, sourceRow)) {

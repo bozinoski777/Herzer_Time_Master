@@ -10,6 +10,7 @@ const {
   validateWorkerD3DataSource,
   verifyManagementRows,
 } = require("../scripts/management-sync");
+const { daySyncKey } = require("../scripts/day-sync-key");
 
 function textProperty(type, value) {
   return { [type]: value ? [{ plain_text: value }] : [] };
@@ -38,6 +39,7 @@ function managementRow(
     name = "Alex Example",
     workerKey = "wrk_alex",
     sourceDatabaseId = "d3-db-alex",
+    legacyKey = false,
   } = {},
 ) {
   return {
@@ -49,7 +51,9 @@ function managementRow(
       Standort: { select: standort ? { name: standort } : null },
       "Vor- und Nachname": textProperty("rich_text", name),
       "Worker Key": textProperty("rich_text", workerKey),
-      "Sync Key": textProperty("rich_text", `${workerKey}|${datum}`),
+      "Sync Key": textProperty("rich_text", legacyKey || !sourcePageId || !workerKey
+        ? `${workerKey}|${datum}`
+        : daySyncKey(workerKey, datum, sourcePageId)),
       "Source Page ID": textProperty("rich_text", sourcePageId),
       "Source Database ID": textProperty("rich_text", sourceDatabaseId),
       "Last Synced At": { date: { start: "2026-09-14T06:00:00.000Z" } },
@@ -154,10 +158,55 @@ test("date edits update the existing D7 row identified by Source Page ID", () =>
     },
     Datum: { date: { start: "2026-09-02" } },
     "Sync Key": {
-      rich_text: [{ type: "text", text: { content: "wrk_alex|2026-09-02" } }],
+      rich_text: [{ type: "text", text: { content: "wrk_alex|2026-09-02|source-1" } }],
     },
     "Last Synced At": { date: { start: "2026-09-14T07:00:00.000Z" } },
   });
+});
+
+test("two locations on one date create and verify two independent D7 rows", () => {
+  const regular = sourceRow("regular-page", "2026-09-16", {
+    weekday: "Mittwoch", hours: 4, standort: "Berlin",
+  });
+  const partDay = sourceRow("teil-tag-page", "2026-09-16", {
+    weekday: "Teil-Tag", hours: 4, standort: "Augsburg",
+  });
+  const sources = [regular, partDay];
+  const plan = planManagementSync(worker(), sources, []);
+  assert.equal(plan.creates.length, 2);
+  assert.deepEqual(
+    plan.creates.map((entry) => entry.syncKey),
+    [
+      "wrk_alex|2026-09-16|regular-page",
+      "wrk_alex|2026-09-16|teil-tag-page",
+    ],
+  );
+  const copies = [
+    managementRow("d7-regular", "regular-page", "2026-09-16", {
+      weekday: "Mittwoch", hours: 4, standort: "Berlin",
+    }),
+    managementRow("d7-part", "teil-tag-page", "2026-09-16", {
+      weekday: "Teil-Tag", hours: 4, standort: "Augsburg",
+    }),
+  ];
+  assert.doesNotThrow(() => verifyManagementRows(worker(), sources, copies, {
+    reconcileMissing: true,
+  }));
+  assert.deepEqual(planManagementSync(worker(), sources, copies).unchanged.length, 2);
+});
+
+test("a legacy date-only D7 row is upgraded in place without replacing the source", () => {
+  const source = sourceRow("regular-page", "2026-09-16");
+  const legacy = managementRow("d7-regular", "regular-page", "2026-09-16", {
+    legacyKey: true,
+  });
+  const plan = planManagementSync(worker(), [source], [legacy]);
+  assert.equal(plan.creates.length, 0);
+  assert.equal(plan.archives.length, 0);
+  assert.equal(plan.updates.length, 1);
+  assert.deepEqual(Object.keys(plan.updates[0].properties).sort(), [
+    "Last Synced At", "Sync Key",
+  ]);
 });
 
 test("changed rows patch only changed business fields plus Last Synced At", () => {
@@ -356,8 +405,8 @@ test("a D7 range is healed instead of passing value verification", () => {
 });
 
 test("historical duplicate Sync Keys fail before they can double-count D7", () => {
-  const first = managementRow("d7-history-1", "old-source-1", "2026-08-01");
-  const second = managementRow("d7-history-2", "old-source-2", "2026-08-01");
+  const first = managementRow("d7-history-1", "old-source-1", "2026-08-01", { legacyKey: true });
+  const second = managementRow("d7-history-2", "old-source-2", "2026-08-01", { legacyKey: true });
   assert.throws(
     () => planManagementSync(worker(), [], [first, second]),
     /duplicate Sync Key value wrk_alex\|2026-08-01/,
