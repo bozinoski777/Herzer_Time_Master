@@ -220,10 +220,38 @@ test("targeted D7 relation filters include historical backfills and fail-closed 
   assert.ok(
     filters[0].or.some(
       (condition) =>
-        condition.select?.equals?.includes("Old office") &&
-        condition.select.equals.includes(" Berlin "),
+        condition.select?.equals === "Old office",
     ),
   );
+  assert.ok(
+    filters[0].or.some(
+      (condition) =>
+        condition.select?.equals === " Berlin ",
+    ),
+  );
+});
+
+test("targeted D7 filters never select an unused D8 name absent from D7", () => {
+  const filters = d7StandortCandidateFilters(
+    d7DataSource(["Berlin", "Urlaub", "Old office"]),
+    [d8Row("d8-berlin", "Berlin"), d8Row("d8-bowling", "Bowlinghalle")],
+    { batchSize: 20 },
+  );
+  const clauses = filters.flatMap((filter) => filter.or);
+  const selectFilters = clauses.flatMap((clause) => clause.and || [clause])
+    .filter((condition) => condition.select)
+    .map((condition) => condition.select);
+
+  assert.ok(selectFilters.every(
+    (filter) => typeof filter.equals !== "object" && filter.equals !== "Bowlinghalle" &&
+      filter.does_not_equal !== "Bowlinghalle",
+  ));
+  assert.ok(clauses.some(
+    (clause) => clause.relation?.contains === "d8-bowling",
+  ));
+  assert.ok(clauses.some(
+    (clause) => clause.select?.equals === "Old office",
+  ));
 });
 
 test("targeted D7 candidate queries batch sequentially and deduplicate page IDs", async () => {
@@ -237,7 +265,7 @@ test("targeted D7 candidate queries batch sequentially and deduplicate page IDs"
     d7DataSource(["Berlin", "Munich", "Missing office"]),
     [d8Row("d8-berlin", "Berlin"), d8Row("d8-munich", "Munich")],
     {
-      batchSize: 3,
+      batchSize: 2,
       query: async (dataSourceId, filter) => {
         calls.push({ dataSourceId, filter });
         return responses[calls.length - 1];

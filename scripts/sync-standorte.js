@@ -158,28 +158,41 @@ function planD7StandortRelations(d7Rows, d8Rows) {
 function d7StandortCandidateClauses(d7DataSource, d8Rows) {
   const d8ByName = d8StandortIndex(d8Rows);
   const workTypeNames = new Set(WORK_TYPE_OPTIONS.map((option) => option.name));
+  const d7OptionNames = new Set(
+    (d7DataSource.properties?.Standort?.select?.options || [])
+      .map((option) => String(option.name || ""))
+      .filter(Boolean),
+  );
   const clauses = [];
 
   for (const [name, pageId] of d8ByName) {
-    // This includes every historical row that needs a backfill after a D8
-    // location is created, without rereading rows already linked correctly.
-    clauses.push({
-      and: [
-        { property: "Standort", select: { equals: name } },
-        {
-          property: D7_STANDORT_RELATION,
-          relation: { does_not_contain: pageId },
-        },
-      ],
-    });
-    // Also find a known D8 page linked from a row whose selected Standort says
-    // something else. This catches wrong links and extra known links.
-    clauses.push({
-      and: [
-        { property: D7_STANDORT_RELATION, relation: { contains: pageId } },
-        { property: "Standort", select: { does_not_equal: name } },
-      ],
-    });
+    if (d7OptionNames.has(name)) {
+      // Notion rejects a Select filter for a name absent from the data-source
+      // schema. An unused or inactive D8 Standort need not exist in D7 yet.
+      clauses.push({
+        and: [
+          { property: "Standort", select: { equals: name } },
+          {
+            property: D7_STANDORT_RELATION,
+            relation: { does_not_contain: pageId },
+          },
+        ],
+      });
+      // Find wrong or extra links without rereading correctly linked rows.
+      clauses.push({
+        and: [
+          { property: D7_STANDORT_RELATION, relation: { contains: pageId } },
+          { property: "Standort", select: { does_not_equal: name } },
+        ],
+      });
+    } else {
+      // No D7 row can select this name, but a stale relation may still point
+      // to its D8 page and must remain eligible for repair.
+      clauses.push({
+        property: D7_STANDORT_RELATION,
+        relation: { contains: pageId },
+      });
+    }
   }
 
   // A blank-titled D8 page cannot be a valid target, but an existing relation
@@ -193,11 +206,13 @@ function d7StandortCandidateClauses(d7DataSource, d8Rows) {
     });
   }
 
-  const nonPhysicalWorkTypes = [...workTypeNames].filter((name) => !d8ByName.has(name));
-  if (nonPhysicalWorkTypes.length > 0) {
+  const nonPhysicalWorkTypes = [...workTypeNames].filter(
+    (name) => d7OptionNames.has(name) && !d8ByName.has(name),
+  );
+  for (const name of nonPhysicalWorkTypes) {
     clauses.push({
       and: [
-        { property: "Standort", select: { equals: nonPhysicalWorkTypes } },
+        { property: "Standort", select: { equals: name } },
         { property: D7_STANDORT_RELATION, relation: { is_not_empty: true } },
       ],
     });
@@ -211,19 +226,13 @@ function d7StandortCandidateClauses(d7DataSource, d8Rows) {
 
   // Preserve the old full-scan fail-closed behavior for a selected physical
   // location that has no D8 row. Unused historic Select options are harmless.
-  const unknownOptions = [
-    ...new Set(
-      (d7DataSource.properties?.Standort?.select?.options || [])
-        .map((option) => String(option.name || ""))
-        .filter(
-          (name) => name.trim() && !d8ByName.has(name) && !workTypeNames.has(name),
-        ),
-    ),
-  ];
-  if (unknownOptions.length > 0) {
+  const unknownOptions = [...d7OptionNames].filter(
+    (name) => name.trim() && !d8ByName.has(name) && !workTypeNames.has(name),
+  );
+  for (const name of unknownOptions) {
     clauses.push({
       property: "Standort",
-      select: { equals: unknownOptions },
+      select: { equals: name },
     });
   }
 
