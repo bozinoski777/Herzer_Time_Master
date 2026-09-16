@@ -37,6 +37,7 @@ const {
 const {
   ARCHIVE_DATABASE_TITLE,
   ensureArchivePresentation,
+  ensureArchiveVacationView,
 } = require("./archive-presentation");
 const {
   archiveDatabaseProperties,
@@ -727,7 +728,11 @@ async function provisionWorker(row) {
       d4DatabaseId: d4.databaseId,
       d4DataSourceId: d4.dataSourceId,
     }]);
+    // A recovered D4 may not have the Urlaub Select option yet. Add work
+    // choices first so Notion accepts the new filtered view on every retry.
+    await ensureStandortOptions(d4.dataSourceId, standorte);
     await ensureArchivePresentation(d4.databaseId, d4.dataSourceId);
+    await ensureArchiveVacationView(d4.databaseId, d4.dataSourceId);
     const vacationDividerId = await ensureVacationDivider(workerPage.id, d3.databaseId);
     const vacationChartViewId = await ensureVacationChart(
       workerPage.id,
@@ -741,7 +746,6 @@ async function provisionWorker(row) {
     // Existing dates and active Standort options are preserved, never duplicated.
     const createdDayRows = await ensureCurrentMonthDayRows(d3.dataSourceId);
     await ensureStandortOptions(d3.dataSourceId, standorte);
-    await ensureStandortOptions(d4.dataSourceId, standorte);
 
     await updateD1(row.id, {
       "Worker Key": richText(key),

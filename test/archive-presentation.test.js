@@ -7,9 +7,13 @@ const {
   ARCHIVE_DATABASE_TITLE,
   ARCHIVE_MONTH_FORMULA,
   ARCHIVE_MONTH_PROPERTY,
+  ARCHIVE_VACATION_VIEW_TITLE,
   D4_PROPERTY_TYPES,
   archiveSchemaProperties,
+  archivePrimaryTableView,
+  archiveVacationViewPayload,
   archiveViewPayload,
+  ensureArchiveVacationView,
 } = require("../scripts/archive-presentation");
 
 function archiveDataSource(overrides = {}) {
@@ -19,7 +23,10 @@ function archiveDataSource(overrides = {}) {
       Wochentag: { id: "weekday", name: "Wochentag", type: "title" },
       Datum: { id: "date", name: "Datum", type: "date" },
       Stunden: { id: "hours", name: "Stunden", type: "number" },
-      Standort: { id: "location", name: "Standort", type: "select" },
+      Standort: {
+        id: "location", name: "Standort", type: "select",
+        select: { options: [{ name: "Urlaub" }, { name: "Schützenstr. 70" }] },
+      },
       "Sync Key": { id: "sync-key", name: "Sync Key", type: "rich_text" },
       Monat: { id: "month", name: "Monat", type: "formula" },
       ...overrides,
@@ -79,4 +86,114 @@ test("archive view payload rejects a non-canonical archive schema", () => {
     () => archiveViewPayload(archiveDataSource({ "Sync Key": undefined })),
     /missing "Sync Key"/,
   );
+});
+
+test("Urlaub view filters archive rows and groups years newest first", () => {
+  const payload = archiveVacationViewPayload(archiveDataSource());
+  assert.equal(payload.name, ARCHIVE_VACATION_VIEW_TITLE);
+  assert.deepEqual(payload.filter, {
+    property: "Standort", select: { equals: "Urlaub" },
+  });
+  assert.deepEqual(payload.sorts, [{ property: "Datum", direction: "descending" }]);
+  assert.deepEqual(payload.configuration.group_by, {
+    type: "date",
+    property_id: "date",
+    group_by: "year",
+    sort: { type: "descending" },
+    hide_empty_groups: true,
+  });
+  assert.deepEqual(payload.configuration.properties,
+    archiveViewPayload(archiveDataSource()).configuration.properties);
+  assert.throws(
+    () => archiveVacationViewPayload(archiveDataSource({
+      Standort: { id: "location", type: "select", select: { options: [] } },
+    })),
+    /needs the Standort select option "Urlaub"/,
+  );
+});
+
+function vacationViewFixture() {
+  const dataSource = archiveDataSource();
+  const views = new Map([[
+    "main", {
+      id: "main", name: "Default view", type: "table", data_source_id: dataSource.id,
+      ...archiveViewPayload(dataSource),
+    },
+  ]]);
+  const calls = { creates: [], updates: [] };
+  const operations = {
+    getDataSource: async () => dataSource,
+    listAllViews: async () => [...views.keys()].map((id) => ({ id })),
+    getView: async (id) => views.get(id),
+    createView: async (payload) => {
+      calls.creates.push(payload);
+      const view = { ...payload, id: "vacation", data_source_id: dataSource.id };
+      views.set(view.id, view);
+      return view;
+    },
+    updateView: async (id, payload) => {
+      calls.updates.push({ id, payload });
+      Object.assign(views.get(id), payload);
+    },
+  };
+  return { dataSource, views, calls, operations };
+}
+
+test("Urlaub is created once on the existing D4 database and reused on retry", async () => {
+  const fixture = vacationViewFixture();
+  const { dataSource, views, calls, operations } = fixture;
+  assert.equal(await ensureArchiveVacationView("d4-database", dataSource.id, operations), "vacation");
+  assert.equal(calls.creates.length, 1);
+  assert.equal(calls.creates[0].database_id, "d4-database");
+  assert.equal(calls.creates[0].data_source_id, dataSource.id);
+  assert.equal(calls.creates[0].type, "table");
+  assert.equal(views.size, 2);
+  assert.equal(await ensureArchiveVacationView("d4-database", dataSource.id, operations), "vacation");
+  assert.equal(calls.creates.length, 1);
+  assert.equal(calls.updates.length, 0);
+});
+
+test("a lost Urlaub-view create response is recovered without another view", async () => {
+  const { dataSource, views, calls, operations } = vacationViewFixture();
+  const create = operations.createView;
+  operations.createView = async (payload) => {
+    await create(payload);
+    throw new Error("lost create response");
+  };
+  await assert.rejects(
+    () => ensureArchiveVacationView("d4-database", dataSource.id, operations),
+    /lost create response/,
+  );
+  assert.equal(await ensureArchiveVacationView("d4-database", dataSource.id, operations), "vacation");
+  assert.equal(views.size, 2);
+  assert.equal(calls.creates.length, 1);
+});
+
+test("an existing Urlaub view is repaired but a same-name incompatible view is not overwritten", async () => {
+  const { dataSource, views, calls, operations } = vacationViewFixture();
+  views.set("vacation", {
+    id: "vacation", name: "Urlaub", type: "table", data_source_id: dataSource.id,
+    filter: null, sorts: [], configuration: { type: "table", properties: [] },
+  });
+  await ensureArchiveVacationView("d4-database", dataSource.id, operations);
+  assert.equal(calls.creates.length, 0);
+  assert.equal(calls.updates.length, 1);
+  assert.deepEqual(views.get("vacation").configuration.group_by,
+    archiveVacationViewPayload(dataSource).configuration.group_by);
+
+  views.get("vacation").type = "chart";
+  await assert.rejects(
+    () => ensureArchiveVacationView("d4-database", dataSource.id, operations),
+    /incompatible "Urlaub" view/,
+  );
+  assert.equal(calls.updates.length, 1);
+});
+
+test("the main Archiv view remains identifiable after Urlaub was added", async () => {
+  const { dataSource, views, operations } = vacationViewFixture();
+  views.get("main").name = "Archiv-Tabelle";
+  views.set("vacation", {
+    id: "vacation", name: "Urlaub", type: "table", data_source_id: dataSource.id,
+  });
+  assert.equal((await archivePrimaryTableView("d4-database", dataSource.id, operations)).id, "main");
 });

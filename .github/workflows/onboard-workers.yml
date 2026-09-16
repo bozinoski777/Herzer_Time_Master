@@ -43,7 +43,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Create frontend, Aktueller Monat, Urlaub KPI, and Archiv
+      - name: Create frontend, Aktueller Monat, Urlaub KPI, Archiv + Urlaub view
         run: node scripts/onboard-workers.js --provision-only
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
