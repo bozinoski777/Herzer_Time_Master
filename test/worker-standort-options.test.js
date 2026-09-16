@@ -16,6 +16,7 @@ process.env.EMPLOYEE_FRONTENDS_DATA_SOURCE_ID = "test-frontends";
 const {
   annualVacationValue,
   dayDatabaseProperties,
+  ensureManualOnboardingChecklist,
   executionMode,
   frontendProperties,
   hasAnnualVacationValue,
@@ -91,28 +92,128 @@ test("new worker D3/D4 schemas use one Standort select and no Tagtyp property", 
   assert.ok(d4.Monat);
 });
 
-test("new worker frontends expose email and annual vacation and include the manual invite checklist", () => {
+test("new worker frontends put the exact four-section manual checklist in a callout", () => {
   const properties = frontendProperties("Tea Smea", "tea@example.com", "wrk_1", "d1_1", 30);
   assert.deepEqual(properties.Email, { email: "tea@example.com" });
   assert.deepEqual(properties.Jahresurlaub, { number: 30 });
   assert.equal(properties["Worker Key"].rich_text[0].text.content, "wrk_1");
 
   const checklist = manualOnboardingChecklistBlocks();
-  assert.equal(checklist.length, 6);
-  assert.ok(checklist.every((block) => block.type === "to_do" && block.to_do.checked === false));
-  const text = checklist.map((block) => block.to_do.rich_text.map((item) => item.text.content).join("")).join("\n");
-  assert.match(text, /Can view/);
-  assert.match(text, /Can edit content/);
-  assert.doesNotMatch(text, /Manuelle Freigabe-Checkliste/);
-  assert.doesNotMatch(text, /Customize layout/);
-  assert.match(text, /DB-Titel ausblenden und Urlaub-Chart benennen/);
-  assert.match(text, /Archiv sperren/);
-  assert.match(text, /Vorlage Teil-Tag/);
-  assert.match(checklist[0].to_do.rich_text[0].text.content, /Vorlage Teil-Tag/);
-  assert.match(checklist[1].to_do.rich_text[0].text.content, /Archiv sperren/);
-  assert.match(checklist[2].to_do.rich_text[0].text.content, /DB-Titel ausblenden/);
-  assert.match(checklist[5].to_do.rich_text.map((item) => item.text.content).join(""), /Diese Frontend-Seite/);
-  assert.ok(checklist.slice(-3).every((block) => block.to_do.rich_text.some(
-    (item) => item.annotations?.bold === true && /^Can (view|edit content)$/.test(item.text.content),
-  )));
+  assert.equal(checklist.length, 1);
+  const callout = checklist[0];
+  assert.equal(callout.type, "callout");
+  assert.deepEqual(callout.callout.rich_text, []);
+  assert.deepEqual(callout.callout.icon, { type: "emoji", emoji: "☑️" });
+  assert.equal(callout.callout.color, "gray_background");
+  const sections = callout.callout.children;
+  const blockText = (block) => block[block.type].rich_text.map((item) => item.text.content).join("");
+  assert.deepEqual(sections.map(blockText), [
+    "Aktueller Monat:", "Urlaub KPI:", "Archiv:", "Berechtigungen:",
+  ]);
+  assert.deepEqual(sections.map((section) => section.bulleted_list_item.children.map(blockText)), [
+    [
+      "Vorlage Teil-Tag anlegen und Datum auf das aktuelle Datum setzen.",
+      "Spalten: Wochentag, Datum, Stunden, verengen.",
+      "Sperren.",
+    ],
+    [
+      "Chart Title umbenennen in: Genommene Urlaubstage bis Ende letzten Monats.",
+      "Titel ausblenden.",
+      "DB sperren.",
+    ],
+    ["Spalten: Wochentag, Datum, Stunden, verengen.", "Sperren."],
+    [
+      "Diese Frontend-Seite an die oben angezeigte E-Mail einladen: Can view.",
+      "Archiv an dieselbe E-Mail einladen: Can view.",
+      "Aktueller Monat an dieselbe E-Mail einladen: Can edit content.",
+    ],
+  ]);
+  const items = sections.flatMap((section) => section.bulleted_list_item.children);
+  assert.equal(items.length, 11);
+  assert.ok(items.every((block) => block.type === "to_do" && block.to_do.checked === false));
+  assert.deepEqual(
+    sections[1].bulleted_list_item.children[0].to_do.rich_text
+      .filter((item) => item.annotations?.bold).map((item) => item.text.content),
+    ["Genommene Urlaubstage bis Ende letzten Monats."],
+  );
+  assert.deepEqual(
+    sections[3].bulleted_list_item.children.flatMap((block) =>
+      block.to_do.rich_text.filter((item) => item.annotations?.bold).map((item) => item.text.content)),
+    ["Can view", "Can view", "Can edit content"],
+  );
+});
+
+function checklistFixture(initialBlocks = []) {
+  const children = new Map([["frontend", []]]);
+  let nextId = 0;
+  let appends = 0;
+  function add(parentId, block) {
+    const id = block.id || `block-${++nextId}`;
+    const copy = structuredClone(block);
+    const nested = copy[copy.type].children || [];
+    delete copy[copy.type].children;
+    copy.id = id;
+    children.get(parentId).push(copy);
+    children.set(id, []);
+    for (const child of nested) add(id, child);
+    return copy;
+  }
+  for (const block of initialBlocks) add("frontend", block);
+  return {
+    children,
+    get appends() { return appends; },
+    operations: {
+      listAllBlockChildren: async (id) => structuredClone(children.get(id) || []),
+      appendBlockChildren: async (id, blocks) => {
+        appends += 1;
+        return blocks.map((block) => add(id, block));
+      },
+    },
+  };
+}
+
+test("checklist provisioning recovers a partial callout without duplicating sections or to-dos", async () => {
+  const fixture = checklistFixture();
+  let interrupted = false;
+  const operations = {
+    ...fixture.operations,
+    appendBlockChildren: async (...args) => {
+      const result = await fixture.operations.appendBlockChildren(...args);
+      if (!interrupted && fixture.appends === 2) {
+        interrupted = true;
+        throw new Error("append succeeded but response was lost");
+      }
+      return result;
+    },
+  };
+  await assert.rejects(
+    ensureManualOnboardingChecklist("frontend", operations),
+    /response was lost/,
+  );
+  const calloutId = await ensureManualOnboardingChecklist("frontend", fixture.operations);
+  assert.equal(fixture.children.get("frontend").length, 1);
+  assert.equal(fixture.children.get(calloutId).length, 4);
+  assert.deepEqual(
+    fixture.children.get(calloutId).map((section) => fixture.children.get(section.id).length),
+    [3, 3, 2, 3],
+  );
+  const writesBeforeRetry = fixture.appends;
+  assert.equal(await ensureManualOnboardingChecklist("frontend", fixture.operations), calloutId);
+  assert.equal(fixture.appends, writesBeforeRetry);
+});
+
+test("old flat checklist is preserved for manual review rather than silently duplicated", async () => {
+  const fixture = checklistFixture([{
+    type: "to_do",
+    to_do: {
+      rich_text: [{ type: "text", text: { content: "Archiv sperren." } }],
+      checked: true,
+    },
+  }]);
+  await assert.rejects(
+    ensureManualOnboardingChecklist("frontend", fixture.operations),
+    /earlier flat setup checklist/,
+  );
+  assert.equal(fixture.appends, 0);
+  assert.equal(fixture.children.get("frontend")[0].to_do.checked, true);
 });

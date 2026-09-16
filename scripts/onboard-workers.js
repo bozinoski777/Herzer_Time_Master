@@ -100,28 +100,56 @@ const { HOLIDAY_HOURS, augsburgPaidHolidayName } = require("./augsburg-holidays"
 const WORKER_FRONTEND_ICON = { type: "emoji", emoji: "👤" };
 const VACATION_CHART_VIEW_ID_PROPERTY = "Urlaub Chart View ID";
 const ANNUAL_VACATION_PROPERTY = "Jahresurlaub";
-const MANUAL_ONBOARDING_CHECKLIST_ITEMS = [
+const MANUAL_ONBOARDING_CHECKLIST_SECTIONS = [
   {
-    text: "In Aktueller Monat die Vorlage Teil-Tag anlegen und Datum auf das aktuelle Datum setzen.",
+    title: "Aktueller Monat:",
+    items: [
+      { text: "Vorlage Teil-Tag anlegen und Datum auf das aktuelle Datum setzen." },
+      { text: "Spalten: Wochentag, Datum, Stunden, verengen." },
+      { text: "Sperren." },
+    ],
   },
   {
-    text: "Archiv sperren.",
+    title: "Urlaub KPI:",
+    items: [
+      {
+        text: "Chart Title umbenennen in: Genommene Urlaubstage bis Ende letzten Monats.",
+        highlight: "Genommene Urlaubstage bis Ende letzten Monats.",
+      },
+      { text: "Titel ausblenden." },
+      { text: "DB sperren." },
+    ],
   },
   {
-    text: "Archiv: DB-Titel ausblenden und Urlaub-Chart benennen.",
+    title: "Archiv:",
+    items: [
+      { text: "Spalten: Wochentag, Datum, Stunden, verengen." },
+      { text: "Sperren." },
+    ],
   },
   {
-    text: "Archiv an dieselbe E-Mail einladen: Can view.",
-    permission: "Can view",
+    title: "Berechtigungen:",
+    items: [
+      {
+        text: "Diese Frontend-Seite an die oben angezeigte E-Mail einladen: Can view.",
+        highlight: "Can view",
+      },
+      { text: "Archiv an dieselbe E-Mail einladen: Can view.", highlight: "Can view" },
+      {
+        text: "Aktueller Monat an dieselbe E-Mail einladen: Can edit content.",
+        highlight: "Can edit content",
+      },
+    ],
   },
-  {
-    text: "Aktueller Monat an dieselbe E-Mail einladen: Can edit content.",
-    permission: "Can edit content",
-  },
-  {
-    text: "Diese Frontend-Seite an die oben angezeigte E-Mail einladen: Can view.",
-    permission: "Can view",
-  },
+];
+const MANUAL_CHECKLIST_ICON = "☑️";
+const LEGACY_MANUAL_CHECKLIST_TEXTS = [
+  "In Aktueller Monat die Vorlage Teil-Tag anlegen und Datum auf das aktuelle Datum setzen.",
+  "Archiv sperren.",
+  "Archiv: DB-Titel ausblenden und Urlaub-Chart benennen.",
+  "Archiv an dieselbe E-Mail einladen: Can view.",
+  "Aktueller Monat an dieselbe E-Mail einladen: Can edit content.",
+  "Diese Frontend-Seite an die oben angezeigte E-Mail einladen: Can view.",
 ];
 
 const D1_CORE_SCHEMA = {
@@ -234,56 +262,141 @@ function blockText(block) {
     .join("");
 }
 
-function checklistRichText({ text, permission }) {
-  if (!permission) return [{ type: "text", text: { content: text } }];
-  const permissionStart = text.lastIndexOf(permission);
+function checklistRichText({ text, highlight }) {
+  if (!highlight) return [{ type: "text", text: { content: text } }];
+  const highlightStart = text.lastIndexOf(highlight);
+  if (highlightStart < 0) throw new Error(`Checklist highlight is missing from "${text}"`);
   return [
-    { type: "text", text: { content: text.slice(0, permissionStart) } },
+    { type: "text", text: { content: text.slice(0, highlightStart) } },
     {
       type: "text",
-      text: { content: permission },
+      text: { content: highlight },
       annotations: { bold: true },
     },
-    { type: "text", text: { content: text.slice(permissionStart + permission.length) } },
+    { type: "text", text: { content: text.slice(highlightStart + highlight.length) } },
   ];
 }
 
-function manualOnboardingChecklistBlocks() {
-  return MANUAL_ONBOARDING_CHECKLIST_ITEMS.map((item) => ({
+function checklistItemBlock(item) {
+  return {
     object: "block",
     type: "to_do",
     to_do: {
       rich_text: checklistRichText(item),
       checked: false,
     },
-  }));
+  };
 }
 
-async function ensureManualOnboardingChecklist(pageId) {
-  let blocks = await listAllBlockChildren(pageId);
-  const idsForItem = (item) => blocks
-    .filter((block) => block.type === "to_do" && blockText(block) === item)
-    .map((block) => block.id);
+function checklistSectionBlock(section) {
+  return {
+    object: "block",
+    type: "bulleted_list_item",
+    bulleted_list_item: {
+      rich_text: [{ type: "text", text: { content: section.title } }],
+      ...(section.items.length > 0 ? { children: section.items.map(checklistItemBlock) } : {}),
+    },
+  };
+}
 
-  for (const item of MANUAL_ONBOARDING_CHECKLIST_ITEMS) {
-    if (idsForItem(item.text).length > 1) {
-      throw new Error(`Worker page ${pageId} has a duplicate onboarding checklist item; refusing to create another.`);
+function manualOnboardingChecklistBlocks() {
+  return [{
+    object: "block",
+    type: "callout",
+    callout: {
+      rich_text: [],
+      icon: { type: "emoji", emoji: MANUAL_CHECKLIST_ICON },
+      color: "gray_background",
+      children: MANUAL_ONBOARDING_CHECKLIST_SECTIONS.map(checklistSectionBlock),
+    },
+  }];
+}
+
+function checklistCalloutShell() {
+  const block = manualOnboardingChecklistBlocks()[0];
+  return {
+    ...block,
+    callout: {
+      ...block.callout,
+      // Append Block Children accepts only two nested levels per request.
+      // The to-dos are added to their section blocks in separate calls.
+      children: block.callout.children.map((section) => ({
+        ...section,
+        bulleted_list_item: { rich_text: section.bulleted_list_item.rich_text },
+      })),
+    },
+  };
+}
+
+function isSetupChecklistCallout(block) {
+  return block.type === "callout" &&
+    block.callout?.icon?.emoji?.replaceAll("\uFE0F", "") === MANUAL_CHECKLIST_ICON.replaceAll("\uFE0F", "") &&
+    blockText(block) === "";
+}
+
+async function ensureManualOnboardingChecklist(pageId, operations = {}) {
+  const listChildren = operations.listAllBlockChildren || listAllBlockChildren;
+  const appendChildren = operations.appendBlockChildren || appendBlockChildren;
+  const pageBlocks = await listChildren(pageId);
+  if (pageBlocks.some((block) =>
+    block.type === "to_do" && LEGACY_MANUAL_CHECKLIST_TEXTS.includes(blockText(block)))) {
+    throw new Error(
+      `Worker page ${pageId} still has the earlier flat setup checklist. ` +
+        "Review it manually before retrying; onboarding will not duplicate or discard checked items.",
+    );
+  }
+
+  let callouts = pageBlocks.filter(isSetupChecklistCallout);
+  if (callouts.length > 1) {
+    throw new Error(`Worker page ${pageId} has multiple setup checklist callouts`);
+  }
+  if (callouts.length === 0) {
+    await appendChildren(pageId, [checklistCalloutShell()]);
+    callouts = (await listChildren(pageId)).filter(isSetupChecklistCallout);
+  }
+  if (callouts.length !== 1) {
+    throw new Error(`Could not recover exactly one setup checklist callout on worker page ${pageId}`);
+  }
+  const callout = callouts[0];
+  let sectionBlocks = await listChildren(callout.id);
+  for (const section of MANUAL_ONBOARDING_CHECKLIST_SECTIONS) {
+    const matching = sectionBlocks.filter((block) =>
+      block.type === "bulleted_list_item" && blockText(block) === section.title);
+    if (matching.length > 1) {
+      throw new Error(`Worker page ${pageId} has duplicate checklist section ${section.title}`);
+    }
+    if (matching.length === 0) {
+      await appendChildren(callout.id, [checklistSectionBlock({ ...section, items: [] })]);
+      sectionBlocks = await listChildren(callout.id);
     }
   }
 
-  const missingItems = MANUAL_ONBOARDING_CHECKLIST_ITEMS.filter((item) => idsForItem(item.text).length === 0);
-  if (missingItems.length > 0) {
-    await appendBlockChildren(pageId, manualOnboardingChecklistBlocks().filter(
-      (block) => missingItems.some((item) => blockText(block) === item.text),
-    ));
-    blocks = await listAllBlockChildren(pageId);
+  for (const section of MANUAL_ONBOARDING_CHECKLIST_SECTIONS) {
+    const matches = sectionBlocks.filter((block) =>
+      block.type === "bulleted_list_item" && blockText(block) === section.title);
+    if (matches.length !== 1) {
+      throw new Error(`Could not recover checklist section ${section.title} on worker page ${pageId}`);
+    }
+    const sectionId = matches[0].id;
+    let items = await listChildren(sectionId);
+    for (const item of section.items) {
+      const count = items.filter((block) => block.type === "to_do" && blockText(block) === item.text).length;
+      if (count > 1) {
+        throw new Error(`Worker page ${pageId} has a duplicate checklist item: ${item.text}`);
+      }
+    }
+    const missing = section.items.filter((item) =>
+      !items.some((block) => block.type === "to_do" && blockText(block) === item.text));
+    if (missing.length > 0) {
+      await appendChildren(sectionId, missing.map(checklistItemBlock));
+      items = await listChildren(sectionId);
+    }
+    if (section.items.some((item) =>
+      items.filter((block) => block.type === "to_do" && blockText(block) === item.text).length !== 1)) {
+      throw new Error(`Could not recover every ${section.title} checklist item on worker page ${pageId}`);
+    }
   }
-
-  const checklistIds = MANUAL_ONBOARDING_CHECKLIST_ITEMS.flatMap((item) => idsForItem(item.text));
-  if (checklistIds.length !== MANUAL_ONBOARDING_CHECKLIST_ITEMS.length) {
-    throw new Error(`Could not recover every onboarding checklist item on worker page ${pageId}`);
-  }
-  return checklistIds;
+  return callout.id;
 }
 
 async function findExactChild(parentPageId, blockType, names) {
@@ -861,6 +974,7 @@ module.exports = {
   executionMode,
   frontendProperties,
   hasAnnualVacationValue,
+  ensureManualOnboardingChecklist,
   manualOnboardingChecklistBlocks,
   recoveredStandortOptions,
   selectRecoverableFrontend,
