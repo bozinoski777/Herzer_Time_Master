@@ -335,11 +335,30 @@ test("the Standort workflow forwards its explicit full-history audit choice", as
         relationOptions = options;
         return 0;
       },
+      ensureAllStandortPagePresentations: async () => 0,
     },
     { fullD7Audit: true },
   );
 
   assert.deepEqual(relationOptions, { verify: true, fullAudit: true });
+});
+
+test("D8 page views are not provisioned after D7 relation verification fails", async () => {
+  let presentationCalls = 0;
+  await assert.rejects(
+    () => runStandortSynchronization([], [], {
+      addMissingStandortOptions: async () => 0,
+      syncD7StandortRelations: async () => {
+        throw new Error("relation verification failed");
+      },
+      ensureAllStandortPagePresentations: async () => {
+        presentationCalls += 1;
+        return 0;
+      },
+    }),
+    /relation verification failed/,
+  );
+  assert.equal(presentationCalls, 0);
 });
 
 test("one worker D3 failure does not block shared D7 option and relation reconciliation", async () => {
@@ -365,6 +384,10 @@ test("one worker D3 failure does not block shared D7 option and relation reconci
           calls.push("d7-relations");
           return 0;
         },
+        ensureAllStandortPagePresentations: async () => {
+          calls.push("d8-pages");
+          return 1;
+        },
       },
     ),
     /Broken worker: worker option failure/,
@@ -374,6 +397,7 @@ test("one worker D3 failure does not block shared D7 option and relation reconci
     "d3:d3-healthy",
     "d7-options",
     "d7-relations",
+    "d8-pages",
   ]);
 });
 

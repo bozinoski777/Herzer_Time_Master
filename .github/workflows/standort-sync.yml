@@ -59,7 +59,7 @@ jobs:
             core.setOutput("run_standort", commandFinished ? "true" : "false");
 
   standorte:
-    name: Sync active D3 Standort options
+    name: Sync Standort options, D7 relations & D8 pages
     if: >-
       always() &&
       (github.event_name == 'workflow_dispatch' || needs.source.outputs.run_standort == 'true')
@@ -71,7 +71,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Add active and remove unused inactive D3 Standort options
+      - name: Reconcile D3 options, D7 relations and D8 page views
         run: node scripts/sync-standorte.js
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}

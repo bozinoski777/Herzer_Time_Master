@@ -27,6 +27,7 @@ const {
   workerReferencesFromD1,
 } = require("./worker-database-references");
 const { assertDayDataSource } = require("./day-schemas");
+const { ensureAllStandortPagePresentations } = require("./standort-presentation");
 
 const D7_STANDORT_RELATION = "Standort (D8)";
 const D7_RELATION_CANDIDATE_BATCH_SIZE = 50;
@@ -405,6 +406,8 @@ async function runStandortSynchronization(
   const syncWorkerOptions = operations.syncD3StandortOptions || syncD3StandortOptions;
   const addD7Options = operations.addMissingStandortOptions || addMissingStandortOptions;
   const syncD7Relations = operations.syncD7StandortRelations || syncD7StandortRelations;
+  const ensureStandortPages =
+    operations.ensureAllStandortPagePresentations || ensureAllStandortPagePresentations;
   const standorte = workerStandortNames(activeStandorte);
   const d3Options = workerStandortOptions(activeStandorte);
   const failures = [];
@@ -465,6 +468,7 @@ async function runStandortSynchronization(
     failures.push(`D7 Standort options: ${errorMessage(failure)}`);
   }
 
+  let relationsVerified = false;
   try {
     console.log(
       `D7 relation mode: ${fullD7Audit ? "full historical audit" : "targeted mismatches"}.`,
@@ -474,8 +478,18 @@ async function runStandortSynchronization(
       fullAudit: fullD7Audit,
     });
     console.log(`D7: ${related} Standort relation(s) reconciled.`);
+    relationsVerified = true;
   } catch (failure) {
     failures.push(`D7 Standort relations: ${errorMessage(failure)}`);
+  }
+
+  if (relationsVerified) {
+    try {
+      const count = await ensureStandortPages(D7, D8);
+      console.log(`D8: ${count} Standort page presentation(s) checked.`);
+    } catch (failure) {
+      failures.push(`D8 Standort pages: ${errorMessage(failure)}`);
+    }
   }
 
   if (failures.length > 0) {
