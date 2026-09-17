@@ -89,7 +89,7 @@ test("new worker D3/D4 schemas use one Standort select and no Tagtyp property", 
     ["Berlin", ...WORK_TYPE_OPTIONS.map((option) => option.name)],
   );
   assert.ok(d4["Sync Key"]);
-  assert.ok(d4.Monat);
+  assert.equal("Monat" in d4, false);
 });
 
 test("new worker frontends put the exact four-section manual checklist in a callout", () => {

@@ -5,16 +5,16 @@ const assert = require("node:assert/strict");
 
 const {
   ARCHIVE_ALL_VIEW_TITLE,
-  ARCHIVE_DATABASE_TITLE,
-  ARCHIVE_MONTH_FORMULA,
-  ARCHIVE_MONTH_PROPERTY,
   ARCHIVE_VACATION_VIEW_TITLE,
   D4_PROPERTY_TYPES,
+  LEGACY_ARCHIVE_DATABASE_TITLE,
+  archiveDatabaseTitle,
   archiveSchemaProperties,
   archivePrimaryTableView,
   archiveVacationViewPayload,
   archiveViewPayload,
   configureArchiveView,
+  ensureArchiveSchema,
   ensureArchiveVacationView,
 } = require("../scripts/archive-presentation");
 
@@ -31,17 +31,17 @@ function archiveDataSource(overrides = {}) {
       },
       "Sync Key": { id: "sync-key", name: "Sync Key", type: "rich_text" },
       "Source Page ID": { id: "source-id", name: "Source Page ID", type: "rich_text" },
-      Monat: { id: "month", name: "Monat", type: "formula" },
       ...overrides,
     },
   };
 }
 
-test("archive presentation exports the canonical title and schema metadata", () => {
-  assert.equal(ARCHIVE_DATABASE_TITLE, "Archiv");
+test("archive presentation derives a worker-specific title and keeps only routing metadata", () => {
+  assert.equal(LEGACY_ARCHIVE_DATABASE_TITLE, "Archiv");
+  assert.equal(archiveDatabaseTitle("Max Müller"), "Max Müllers Archiv");
+  assert.equal(archiveDatabaseTitle("  Erika Muster  "), "Erika Musters Archiv");
+  assert.throws(() => archiveDatabaseTitle("  "), /requires a worker name/);
   assert.equal(ARCHIVE_ALL_VIEW_TITLE, "Alle");
-  assert.equal(ARCHIVE_MONTH_PROPERTY, "Monat");
-  assert.equal(ARCHIVE_MONTH_FORMULA, 'formatDate(prop("Datum"), "YYYY-MM")');
   assert.deepEqual(D4_PROPERTY_TYPES, {
     Wochentag: "title",
     Datum: "date",
@@ -49,28 +49,23 @@ test("archive presentation exports the canonical title and schema metadata", () 
     Standort: "select",
     "Sync Key": "rich_text",
     "Source Page ID": "rich_text",
-    Monat: "formula",
   });
   assert.deepEqual(archiveSchemaProperties(), {
     "Sync Key": { rich_text: {} },
     "Source Page ID": { rich_text: {} },
-    Monat: { formula: { expression: ARCHIVE_MONTH_FORMULA } },
   });
 });
 
-test("archive table payload sorts newest first, groups by month, and hides technical fields", () => {
+test("archive table payload groups Datum by month and hides technical fields", () => {
   const payload = archiveViewPayload(archiveDataSource());
 
   assert.deepEqual(payload.sorts, [{ property: "Datum", direction: "descending" }]);
   assert.equal("filter" in payload, false);
   assert.deepEqual(payload.configuration.group_by, {
-    type: "formula",
-    property_id: "month",
-    group_by: {
-      type: "text",
-      group_by: "exact",
-      sort: { type: "descending" },
-    },
+    type: "date",
+    property_id: "date",
+    group_by: "month",
+    sort: { type: "descending" },
     hide_empty_groups: true,
   });
   assert.deepEqual(payload.configuration.properties, [
@@ -80,19 +75,54 @@ test("archive table payload sorts newest first, groups by month, and hides techn
     { property_id: "hours", visible: true },
     { property_id: "sync-key", visible: false },
     { property_id: "source-id", visible: false },
-    { property_id: "month", visible: false },
   ]);
 });
 
 test("archive view payload rejects a non-canonical archive schema", () => {
   assert.throws(
-    () => archiveViewPayload(archiveDataSource({ Monat: { id: "month", type: "rich_text" } })),
-    /Monat.*rich_text.*expected formula/,
+    () => archiveViewPayload(archiveDataSource({ Datum: { id: "date", type: "rich_text" } })),
+    /Datum.*rich_text.*expected date/,
   );
   assert.throws(
     () => archiveViewPayload(archiveDataSource({ "Sync Key": undefined })),
     /missing "Sync Key"/,
   );
+});
+
+test("older archives keep their Monat property hidden while grouping by Datum", () => {
+  const dataSource = archiveDataSource({ Monat: { id: "month", name: "Monat", type: "formula" } });
+  const all = archiveViewPayload(dataSource);
+  const vacation = archiveVacationViewPayload(dataSource);
+  assert.equal(all.configuration.group_by.property_id, "date");
+  assert.equal(all.configuration.properties.at(-1).property_id, "month");
+  assert.equal(all.configuration.properties.at(-1).visible, false);
+  assert.equal(vacation.configuration.properties.at(-1).visible, false);
+});
+
+test("archive schema repair never creates or deletes a Monat formula", async () => {
+  const fresh = archiveDataSource();
+  const legacy = archiveDataSource({ Monat: { id: "month", type: "formula" } });
+  const updates = [];
+  const operations = {
+    getDataSource: async () => fresh,
+    updateDataSource: async (...args) => updates.push(args),
+  };
+  assert.equal(await ensureArchiveSchema(fresh.id, operations), fresh);
+  assert.equal(updates.length, 0);
+
+  operations.getDataSource = async () => legacy;
+  assert.equal(await ensureArchiveSchema(legacy.id, operations), legacy);
+  assert.equal(updates.length, 0);
+  assert.ok(legacy.properties.Monat);
+
+  delete legacy.properties["Source Page ID"];
+  operations.updateDataSource = async (_id, properties) => {
+    updates.push(properties);
+    legacy.properties["Source Page ID"] = { id: "source-id", type: "rich_text" };
+  };
+  await ensureArchiveSchema(legacy.id, operations);
+  assert.deepEqual(updates, [{ "Source Page ID": { rich_text: {} } }]);
+  assert.ok(legacy.properties.Monat);
 });
 
 test("Urlaub view filters archive rows and groups years newest first", () => {

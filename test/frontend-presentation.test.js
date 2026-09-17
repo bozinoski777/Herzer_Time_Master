@@ -4,7 +4,6 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
-  ARCHIVE_MONTH_FORMULA,
   VACATION_CHART_TITLE,
   archiveSchemaProperties,
   archiveViewPayload,
@@ -25,7 +24,6 @@ function dataSource() {
       Stunden: { id: "hours", name: "Stunden", type: "number" },
       "Sync Key": { id: "sync", name: "Sync Key", type: "rich_text" },
       "Source Page ID": { id: "source-id", name: "Source Page ID", type: "rich_text" },
-      Monat: { id: "month", name: "Monat", type: "formula" },
       "Worker Key": { id: "worker-key", name: "Worker Key", type: "rich_text" },
       "D1 Record ID": { id: "d1-id", name: "D1 Record ID", type: "rich_text" },
       "Vor- und Nachname": { id: "employee", name: "Vor- und Nachname", type: "title" },
@@ -45,21 +43,18 @@ test("D3 view has no date filter and shows worker columns in ascending date orde
   assert.ok(payload.configuration.properties.every((property) => property.visible));
 });
 
-test("D4 groups by formula month, sorts newest first, and hides technical fields", () => {
+test("D4 groups directly by Datum month, sorts newest first, and hides technical fields", () => {
   assert.deepEqual(archiveSchemaProperties(), {
     "Sync Key": { rich_text: {} },
     "Source Page ID": { rich_text: {} },
-    Monat: { formula: { expression: ARCHIVE_MONTH_FORMULA } },
   });
 
   const payload = archiveViewPayload(dataSource());
   assert.deepEqual(payload.sorts, [{ property: "Datum", direction: "descending" }]);
-  assert.equal(payload.configuration.group_by.property_id, "month");
-  assert.deepEqual(payload.configuration.group_by.group_by, {
-    type: "text",
-    group_by: "exact",
-    sort: { type: "descending" },
-  });
+  assert.equal(payload.configuration.group_by.property_id, "date");
+  assert.equal(payload.configuration.group_by.type, "date");
+  assert.equal(payload.configuration.group_by.group_by, "month");
+  assert.deepEqual(payload.configuration.group_by.sort, { type: "descending" });
   assert.equal(
     payload.configuration.properties.find((property) => property.property_id === "sync").visible,
     false,
@@ -68,10 +63,7 @@ test("D4 groups by formula month, sorts newest first, and hides technical fields
     payload.configuration.properties.find((property) => property.property_id === "source-id").visible,
     false,
   );
-  assert.equal(
-    payload.configuration.properties.find((property) => property.property_id === "month").visible,
-    false,
-  );
+  assert.equal(payload.configuration.properties.some((property) => property.property_id === "month"), false);
 });
 
 test("vacation number chart counts Urlaub rows in the current calendar year", () => {

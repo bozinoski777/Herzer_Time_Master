@@ -9,8 +9,6 @@ const {
   updateView,
 } = require("./notion");
 const {
-  ARCHIVE_MONTH_FORMULA,
-  ARCHIVE_MONTH_PROPERTY,
   D4_PROPERTY_TYPES,
   archiveMetadataProperties,
   assertArchiveDataSource,
@@ -22,10 +20,21 @@ const {
   viewProperties,
 } = require("./database-presentation");
 
-const ARCHIVE_DATABASE_TITLE = "Archiv";
+const LEGACY_ARCHIVE_DATABASE_TITLE = "Archiv";
 const ARCHIVE_ALL_VIEW_TITLE = "Alle";
 const ARCHIVE_VACATION_VIEW_TITLE = "Urlaub";
 const D4_VISIBLE_COLUMNS = ["Wochentag", "Datum", "Standort", "Stunden"];
+
+function archiveDatabaseTitle(workerName) {
+  const name = String(workerName || "").trim();
+  if (!name) throw new Error("An archive database title requires a worker name");
+  return `${name}s Archiv`;
+}
+
+function archiveHiddenColumns(dataSource) {
+  // Older archives can keep their unused Monat formula without exposing it.
+  return ["Sync Key", "Source Page ID", ...(dataSource.properties?.Monat ? ["Monat"] : [])];
+}
 
 function canonicalPropertyId(value) {
   try {
@@ -37,7 +46,6 @@ function canonicalPropertyId(value) {
 
 function archiveViewPayload(dataSource) {
   assertArchiveDataSource(dataSource);
-  const monthPropertyId = propertyId(dataSource, ARCHIVE_MONTH_PROPERTY);
   return {
     sorts: [{ property: "Datum", direction: "descending" }],
     configuration: {
@@ -45,16 +53,13 @@ function archiveViewPayload(dataSource) {
       properties: viewProperties(
         dataSource,
         D4_VISIBLE_COLUMNS,
-        ["Sync Key", "Source Page ID", ARCHIVE_MONTH_PROPERTY],
+        archiveHiddenColumns(dataSource),
       ),
       group_by: {
-        type: "formula",
-        property_id: monthPropertyId,
-        group_by: {
-          type: "text",
-          group_by: "exact",
-          sort: { type: "descending" },
-        },
+        type: "date",
+        property_id: propertyId(dataSource, "Datum"),
+        group_by: "month",
+        sort: { type: "descending" },
         hide_empty_groups: true,
       },
     },
@@ -78,7 +83,7 @@ function archiveVacationViewPayload(dataSource) {
       properties: viewProperties(
         dataSource,
         D4_VISIBLE_COLUMNS,
-        ["Sync Key", "Source Page ID", ARCHIVE_MONTH_PROPERTY],
+        archiveHiddenColumns(dataSource),
       ),
       group_by: {
         type: "date",
@@ -174,8 +179,10 @@ async function ensureArchiveVacationView(databaseId, dataSourceId, operations = 
   return created.id;
 }
 
-async function ensureArchiveSchema(dataSourceId) {
-  let dataSource = await getDataSource(dataSourceId);
+async function ensureArchiveSchema(dataSourceId, operations = {}) {
+  const retrieveDataSource = operations.getDataSource || getDataSource;
+  const updateSchema = operations.updateDataSource || updateDataSource;
+  let dataSource = await retrieveDataSource(dataSourceId);
   assertDayDataSource(dataSource);
 
   const syncKey = dataSource.properties?.["Sync Key"];
@@ -188,24 +195,14 @@ async function ensureArchiveSchema(dataSourceId) {
     throw new Error(`D4 ${dataSourceId} property "Source Page ID" is ${sourcePageId.type}, expected rich_text`);
   }
 
-  const month = dataSource.properties?.[ARCHIVE_MONTH_PROPERTY];
-  if (month && month.type !== "formula") {
-    throw new Error(
-      `D4 ${dataSourceId} property "${ARCHIVE_MONTH_PROPERTY}" is ${month.type}, expected formula`,
-    );
-  }
-
   const additions = {};
   const metadata = archiveMetadataProperties();
   if (!syncKey) additions["Sync Key"] = metadata["Sync Key"];
   if (!sourcePageId) additions["Source Page ID"] = metadata["Source Page ID"];
-  if (!month || month.formula?.expression !== ARCHIVE_MONTH_FORMULA) {
-    additions[ARCHIVE_MONTH_PROPERTY] = metadata[ARCHIVE_MONTH_PROPERTY];
-  }
 
   if (Object.keys(additions).length > 0) {
-    await updateDataSource(dataSourceId, additions);
-    dataSource = await getDataSource(dataSourceId);
+    await updateSchema(dataSourceId, additions);
+    dataSource = await retrieveDataSource(dataSourceId);
   }
 
   assertArchiveDataSource(dataSource);
@@ -220,18 +217,19 @@ async function configureArchiveView(databaseId, dataSourceId, operations = {}) {
   await update(view.id, { name: ARCHIVE_ALL_VIEW_TITLE, ...archiveViewPayload(dataSource) });
 }
 
-async function ensureArchivePresentation(databaseId, dataSourceId) {
-  await setDatabaseAndDataSourceTitle(databaseId, dataSourceId, ARCHIVE_DATABASE_TITLE);
+async function ensureArchivePresentation(databaseId, dataSourceId, databaseTitle) {
+  // Maintenance of an existing archive must not rename it. Onboarding passes
+  // the worker-specific title explicitly when it creates or recovers D4.
+  if (databaseTitle) await setDatabaseAndDataSourceTitle(databaseId, dataSourceId, databaseTitle);
   await configureArchiveView(databaseId, dataSourceId);
 }
 
 module.exports = {
-  ARCHIVE_DATABASE_TITLE,
+  LEGACY_ARCHIVE_DATABASE_TITLE,
   ARCHIVE_ALL_VIEW_TITLE,
   ARCHIVE_VACATION_VIEW_TITLE,
-  ARCHIVE_MONTH_FORMULA,
-  ARCHIVE_MONTH_PROPERTY,
   D4_PROPERTY_TYPES,
+  archiveDatabaseTitle,
   archiveSchemaProperties: archiveMetadataProperties,
   archiveViewPayload,
   archiveVacationViewPayload,

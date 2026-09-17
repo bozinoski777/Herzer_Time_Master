@@ -4,8 +4,6 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
-  ARCHIVE_MONTH_FORMULA,
-  ARCHIVE_MONTH_PROPERTY,
   DAY_PROPERTY_TYPES,
   D4_PROPERTY_TYPES,
   archiveDatabaseProperties,
@@ -40,7 +38,6 @@ test("day schemas expose one canonical D3 contract and an archive extension", ()
     ...DAY_PROPERTY_TYPES,
     "Sync Key": "rich_text",
     "Source Page ID": "rich_text",
-    Monat: "formula",
   });
   assert.equal(Object.isFrozen(DAY_PROPERTY_TYPES), true);
   assert.equal(Object.isFrozen(D4_PROPERTY_TYPES), true);
@@ -71,20 +68,15 @@ test("current-month schema creates the worker day fields and color-safe initial 
 });
 
 test("archive schema extends the day fields with deterministic technical metadata", () => {
-  assert.equal(ARCHIVE_MONTH_PROPERTY, "Monat");
-  assert.equal(ARCHIVE_MONTH_FORMULA, 'formatDate(prop("Datum"), "YYYY-MM")');
   assert.deepEqual(archiveMetadataProperties(), {
     "Sync Key": { rich_text: {} },
     "Source Page ID": { rich_text: {} },
-    Monat: { formula: { expression: ARCHIVE_MONTH_FORMULA } },
   });
 
   const properties = archiveDatabaseProperties(["Berlin"]);
   assert.deepEqual(properties["Sync Key"], { rich_text: {} });
   assert.deepEqual(properties["Source Page ID"], { rich_text: {} });
-  assert.deepEqual(properties.Monat, {
-    formula: { expression: ARCHIVE_MONTH_FORMULA },
-  });
+  assert.equal("Monat" in properties, false);
   assert.equal("Tagtyp" in properties, false);
 });
 
@@ -93,7 +85,6 @@ test("day and archive validators enforce their respective property contracts", (
   const archive = dataSource({
     "Sync Key": { type: "rich_text" },
     "Source Page ID": { type: "rich_text" },
-    Monat: { type: "formula" },
   });
 
   assert.equal(assertDayDataSource(day), day);
@@ -104,6 +95,11 @@ test("day and archive validators enforce their respective property contracts", (
   );
   assert.throws(
     () => assertArchiveDataSource(dataSource({ "Sync Key": { type: "rich_text" } })),
-    /missing "Monat"/,
+    /missing "Source Page ID"/,
   );
+  assert.equal(assertArchiveDataSource(dataSource({
+    "Sync Key": { type: "rich_text" },
+    "Source Page ID": { type: "rich_text" },
+    Monat: { type: "formula" },
+  })).properties.Monat.type, "formula");
 });

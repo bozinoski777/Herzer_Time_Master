@@ -35,7 +35,8 @@ const {
   hideInternalFrontendColumnsInManagementView,
 } = require("./frontend-presentation");
 const {
-  ARCHIVE_DATABASE_TITLE,
+  LEGACY_ARCHIVE_DATABASE_TITLE,
+  archiveDatabaseTitle,
   ensureArchivePresentation,
   ensureArchiveVacationView,
 } = require("./archive-presentation");
@@ -653,8 +654,8 @@ async function validateResolvedWorkerDatabase(
     expectedParentPageId: parentPageId,
   });
   assertWorkerDataSourceReference(worker, labels.role, dataSource, {
-    // A recovered D4 may predate the Monat formula. Archive presentation
-    // repairs that metadata immediately after the route itself is proven.
+    // A recovered D4 may predate newer technical metadata. Archive
+    // presentation repairs that after the route itself is proven.
     schema: assertDayDataSource,
   });
   return { databaseId, dataSourceId };
@@ -826,10 +827,11 @@ async function provisionWorker(row) {
     });
     await ensureCurrentMonthPresentation(d3.databaseId, d3.dataSourceId);
 
+    const archiveTitle = archiveDatabaseTitle(name);
     const d4 = await resolveWorkerDatabase(row, workerPage.id, {
       role: "d4",
-      title: ARCHIVE_DATABASE_TITLE,
-      recoveryTitles: [ARCHIVE_DATABASE_TITLE, "D4 · Archive"],
+      title: archiveTitle,
+      recoveryTitles: [archiveTitle, LEGACY_ARCHIVE_DATABASE_TITLE, "D4 · Archive"],
       databaseIdProperty: "D4 Database ID",
       dataSourceIdProperty: "D4 Data Source ID",
       standorte,
@@ -846,7 +848,7 @@ async function provisionWorker(row) {
     // A recovered D4 may not have the Urlaub Select option yet. Add work
     // choices first so Notion accepts the new filtered view on every retry.
     await ensureStandortOptions(d4.dataSourceId, standorte);
-    await ensureArchivePresentation(d4.databaseId, d4.dataSourceId);
+    await ensureArchivePresentation(d4.databaseId, d4.dataSourceId, archiveTitle);
     await ensureArchiveVacationView(d4.databaseId, d4.dataSourceId);
     const vacationDividerId = await ensureVacationDivider(workerPage.id, d3.databaseId);
     const vacationChartViewId = await ensureVacationChart(

@@ -22,9 +22,6 @@ const {
 } = require("./notion");
 const { DAY_PROPERTY_TYPES } = require("./day-schemas");
 const {
-  ARCHIVE_DATABASE_TITLE,
-  ARCHIVE_MONTH_FORMULA,
-  ARCHIVE_MONTH_PROPERTY,
   archiveSchemaProperties,
   archiveViewPayload,
   configureArchiveView,
@@ -269,9 +266,6 @@ async function hideInternalFrontendColumnsInManagementView(dataSourceId) {
 }
 
 module.exports = {
-  ARCHIVE_DATABASE_TITLE,
-  ARCHIVE_MONTH_FORMULA,
-  ARCHIVE_MONTH_PROPERTY,
   CURRENT_MONTH_DATABASE_TITLE,
   LEGACY_VACATION_CHART_TITLE,
   VACATION_CHART_TITLE,
