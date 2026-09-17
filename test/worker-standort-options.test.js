@@ -114,6 +114,7 @@ test("new worker frontends put the exact four-section manual checklist in a call
     [
       "Vorlage Teil-Tag anlegen und Datum auf das aktuelle Datum setzen.",
       "Spalten: Wochentag, Datum, Stunden, verengen.",
+      "Spalten Icons ändern",
       "Sperren.",
     ],
     [
@@ -121,7 +122,7 @@ test("new worker frontends put the exact four-section manual checklist in a call
       "Titel ausblenden.",
       "DB sperren.",
     ],
-    ["Spalten: Wochentag, Datum, Stunden, verengen.", "Sperren."],
+    ["Spalten: Wochentag, Datum, Stunden, verengen.", "Spalten Icons ändern", "Sperren."],
     [
       "Diese Frontend-Seite an die oben angezeigte E-Mail einladen: Can view.",
       "Archiv an dieselbe E-Mail einladen: Can view.",
@@ -129,7 +130,7 @@ test("new worker frontends put the exact four-section manual checklist in a call
     ],
   ]);
   const items = sections.flatMap((section) => section.bulleted_list_item.children);
-  assert.equal(items.length, 11);
+  assert.equal(items.length, 13);
   assert.ok(items.every((block) => block.type === "to_do" && block.to_do.checked === false));
   assert.deepEqual(
     sections[1].bulleted_list_item.children[0].to_do.rich_text
@@ -195,7 +196,7 @@ test("checklist provisioning recovers a partial callout without duplicating sect
   assert.equal(fixture.children.get(calloutId).length, 4);
   assert.deepEqual(
     fixture.children.get(calloutId).map((section) => fixture.children.get(section.id).length),
-    [3, 3, 2, 3],
+    [4, 3, 3, 3],
   );
   const writesBeforeRetry = fixture.appends;
   assert.equal(await ensureManualOnboardingChecklist("frontend", fixture.operations), calloutId);

@@ -106,6 +106,7 @@ const MANUAL_ONBOARDING_CHECKLIST_SECTIONS = [
     items: [
       { text: "Vorlage Teil-Tag anlegen und Datum auf das aktuelle Datum setzen." },
       { text: "Spalten: Wochentag, Datum, Stunden, verengen." },
+      { text: "Spalten Icons ändern" },
       { text: "Sperren." },
     ],
   },
@@ -124,6 +125,7 @@ const MANUAL_ONBOARDING_CHECKLIST_SECTIONS = [
     title: "Archiv:",
     items: [
       { text: "Spalten: Wochentag, Datum, Stunden, verengen." },
+      { text: "Spalten Icons ändern" },
       { text: "Sperren." },
     ],
   },
