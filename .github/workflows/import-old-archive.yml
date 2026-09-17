@@ -1,0 +1,56 @@
+name: Copy old archive to one worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      Name:
+        description: "Exact D1 Vor- und Nachname (one worker only)"
+        required: true
+        type: string
+      destination_archive:
+        description: "That worker's new D4 archive database or data-source ID"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: herzer-notion-mutations
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: "1 · Check worker, source, destination & cutoff"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Read-only preflight (only dates before 1 September 2026)
+        run: node scripts/import-old-archive.js --preflight-only
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          D1_DATA_SOURCE_ID: ${{ secrets.D1_DATA_SOURCE_ID }}
+          IMPORT_WORKER_NAME: ${{ inputs.Name }}
+          IMPORT_DESTINATION_ARCHIVE_ID: ${{ inputs.destination_archive }}
+
+  copy:
+    name: "2 · Copy and verify historical archive rows"
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Add missing Standort choices, copy rows, verify destination
+        run: node scripts/import-old-archive.js
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          D1_DATA_SOURCE_ID: ${{ secrets.D1_DATA_SOURCE_ID }}
+          IMPORT_WORKER_NAME: ${{ inputs.Name }}
+          IMPORT_DESTINATION_ARCHIVE_ID: ${{ inputs.destination_archive }}

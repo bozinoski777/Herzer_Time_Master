@@ -165,6 +165,7 @@ GitHub Actions cron is always **UTC**.
 | Workflow | UTC cron | Intended cadence |
 | --- | --- | --- |
 | Onboard workers | — | Manual only, when a prepared worker should be provisioned |
+| Copy old archive to one worker | — | Manual, one named worker and one destination D4 per run; never scheduled |
 | Daily sync | `15 5,6,13,14 * * 1-5` | Exactly 07:15 and 15:15 Europe/Berlin on weekdays; two UTC entries are safely skipped for DST |
 | Standort sync | After the Daily D3→D7 command finishes | Separate GitHub workflow; also manual; targeted by default, with an optional full-history D7 relation audit |
 | Month rollover | `15 22,23 * * *` | Exactly 00:15 Europe/Berlin every day, including weekends; one UTC entry is safely skipped for DST |
@@ -172,6 +173,17 @@ GitHub Actions cron is always **UTC**.
 GitHub Actions cron is **always UTC**. The schedules deliberately include both possible UTC offsets, then a tiny cadence job uses `Europe/Berlin` to allow only the matching entry: Daily Worker Sync therefore runs at **07:15 and 15:15 Berlin time** throughout the year, and Month Rollover runs at **00:15 Berlin time**. The completed Daily command publishes a short-lived marker even when one worker failed after another worker's D7 writes succeeded; that marker starts the independent Standort Sync, while the Daily run remains red. A skipped daylight-saving helper run has no marker and cannot perform a Standort sync. Rollover remains daily, rather than only on the first of the month, so it catches up safely after a missed GitHub run. Use **Run workflow** in GitHub Actions for exceptional local-time or holiday runs.
 
 All Notion-mutating workflows use one shared `herzer-notion-mutations` concurrency group, so they never run concurrently. GitHub retains at most one pending run in a concurrency group; it is not a durable queue. Daily and rollover schedules repeat, and Standort sync is also manually runnable if a pending run is superseded.
+
+## One-worker copy from the old shared archive
+
+The manual **Copy old archive to one worker** action reads only the pinned legacy `Archiv` database `4206edef-dfc8-435c-b9a9-296500003907` (data source `13ee17a3-c636-42fa-90cd-08a6cb719628`). It **never edits, removes, or archives an old record**. Connect the same Notion integration to that old archive with read access before running the action. The destination must be an already-onboarded, empty worker D4 archive in this POC; the action refuses any unrelated existing row. Do not point it at a live v1/Generat database.
+
+1. Open **Actions → Copy old archive to one worker → Run workflow**. Enter the worker's exact D1 `Vor- und Nachname` in **Name** and that worker's new D4 archive **database ID or data-source ID** in **destination_archive**. These are the action's only inputs. If two D1 workers have the same exact name, the action refuses to choose one.
+2. The first stage reads and checks the worker, frontend identity, source/destination schemas and ownership, dates, and destination state. It does not write. The second stage repeats those checks, then copies only old rows whose `Vor- und Nachname` matches exactly and whose `Date` is **earlier than `2026-09-01`**. **1 September 2026 itself and every later date are excluded.** A missing, ranged, timed, or invalid source date fails the run instead of silently importing it.
+3. The copy maps `Wochentag → Wochentag`, `Date → Datum`, `Stunden → Stunden`, and `Standort → Standort`. It adds only missing Standort select choices to the destination D4, keeping existing choices/colors. It also sets hidden `Sync Key` and `Source Page ID` to identify each copied old page. Two old pages on one date remain two separate archive entries. The existing `Alle`/`Urlaub` D4 views and vacation chart see the copied rows automatically; no extra database or view is created.
+4. Check the final verified count in the action log and review the destination D4. If the run stops mid-copy, rerun it with the same two inputs: exact existing copies are skipped and only missing pages are created. A changed, duplicate, or unexpected destination row stops the action for manual review; it never overwrites that row. Requests use the shared Notion pacing/retry policy, but page creates are not automatically retried after an ambiguous network result.
+
+This migration populates **D4 only**. It does not backfill historical D7 management records or D8 totals. Run it only after the worker's D1 `Current Month` is September 2026 or later and no rollover is pending. Importing a historical `Urlaub` row may affect the worker's current-year vacation KPI; the old archive remains unchanged.
 
 ## Controlled POC simulation
 
