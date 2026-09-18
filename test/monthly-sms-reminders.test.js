@@ -20,6 +20,7 @@ const {
   reminderRequiredDates,
   selectWorkers,
   thirdFriday,
+  twilioAuthentication,
   twilioMessageParameters,
   twilioSenderConfiguration,
   validHttpsUrl,
@@ -168,5 +169,24 @@ test("a Messaging Service is preferred over a direct Twilio sender", () => {
   assert.throws(
     () => twilioSenderConfiguration({ TWILIO_MESSAGING_SERVICE_SID: "not-a-service" }),
     /must be a Twilio Messaging Service SID/,
+  );
+});
+
+test("a Twilio API key is preferred over an Auth Token for production authentication", () => {
+  assert.deepEqual(
+    twilioAuthentication({
+      TWILIO_API_KEY_SID: "SK00000000000000000000000000000000",
+      TWILIO_API_KEY_SECRET: "api-key-secret",
+      TWILIO_AUTH_TOKEN: "old-token",
+    }),
+    { type: "api-key", username: "SK00000000000000000000000000000000", password: "api-key-secret" },
+  );
+  assert.deepEqual(
+    twilioAuthentication({ TWILIO_AUTH_TOKEN: "live-auth-token" }),
+    { type: "auth-token", username: "AC00000000000000000000000000000000", password: "live-auth-token" },
+  );
+  assert.throws(
+    () => twilioAuthentication({ TWILIO_API_KEY_SID: "SK00000000000000000000000000000000" }),
+    /Set both TWILIO_API_KEY_SID and TWILIO_API_KEY_SECRET/,
   );
 });

@@ -78,12 +78,30 @@ const D1_REMINDER_SCHEMA = Object.freeze({
 const {
   D1_DATA_SOURCE_ID: D1,
   TWILIO_ACCOUNT_SID: TWILIO_ACCOUNT_SID,
-  TWILIO_AUTH_TOKEN: TWILIO_AUTH_TOKEN,
 } = requireEnv(
   "D1_DATA_SOURCE_ID",
   "TWILIO_ACCOUNT_SID",
-  "TWILIO_AUTH_TOKEN",
 );
+
+function twilioAuthentication(environment = process.env) {
+  const apiKeySid = String(environment.TWILIO_API_KEY_SID || "").trim();
+  const apiKeySecret = String(environment.TWILIO_API_KEY_SECRET || "").trim();
+  const authToken = String(environment.TWILIO_AUTH_TOKEN || "").trim();
+
+  if (apiKeySid || apiKeySecret) {
+    if (!apiKeySid || !apiKeySecret) {
+      throw new Error("Set both TWILIO_API_KEY_SID and TWILIO_API_KEY_SECRET, or neither.");
+    }
+    return { type: "api-key", username: apiKeySid, password: apiKeySecret };
+  }
+  if (authToken) return { type: "auth-token", username: TWILIO_ACCOUNT_SID, password: authToken };
+
+  throw new Error(
+    "Missing Twilio authentication: set TWILIO_API_KEY_SID and TWILIO_API_KEY_SECRET (recommended), or TWILIO_AUTH_TOKEN.",
+  );
+}
+
+const TWILIO_AUTHENTICATION = twilioAuthentication();
 
 function twilioSenderConfiguration(environment = process.env) {
   const messagingServiceSid = String(environment.TWILIO_MESSAGING_SERVICE_SID || "").trim();
@@ -360,7 +378,9 @@ function twilioMessageParameters({ to, body }, sender = TWILIO_SENDER) {
 
 async function sendTwilioSms({ to, body }) {
   const payload = new URLSearchParams(twilioMessageParameters({ to, body }));
-  const authorization = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString("base64");
+  const authorization = Buffer.from(
+    `${TWILIO_AUTHENTICATION.username}:${TWILIO_AUTHENTICATION.password}`,
+  ).toString("base64");
 
   let response;
   try {
@@ -658,6 +678,7 @@ module.exports = {
   reminderRequiredDates,
   selectWorkers,
   thirdFriday,
+  twilioAuthentication,
   twilioMessageParameters,
   twilioSenderConfiguration,
   validHttpsUrl,
