@@ -116,6 +116,9 @@ Store runtime values as **GitHub Actions secrets**. The IDs are not credentials,
 | `EMPLOYEE_FRONTENDS_DATA_SOURCE_ID` | `f9c03999-d2e6-4fcb-a13f-3f9fc71a3ceb` |
 | `EMPLOYEE_FRONTEND_PAGE_ID` | `3d980779-bf2a-8129-b4c8-c13efb2423ee` — legacy migration fallback; retain while old workflow configuration remains. |
 | `ROLLOVER_LIVE_ENABLED` | Leave unset for the first controlled simulation. Set exactly `true` only after that worker is verified and management approves automatic live rollovers. |
+| `TWILIO_ACCOUNT_SID` | The Account SID from the Twilio Console. Required only by the monthly SMS reminder workflow. |
+| `TWILIO_AUTH_TOKEN` | The Twilio Auth Token for that account. Treat it as a credential; never commit or print it. |
+| `TWILIO_FROM_NUMBER` | The approved Twilio sender: normally the Twilio number in E.164 form, or an approved alphanumeric sender ID where Twilio permits it. |
 
 Add or update them in **Herzer_Time_Master → Settings → Secrets and variables → Actions**. The onboarding workflow prefers `EMPLOYEE_FRONTENDS_DATA_SOURCE_ID`; if it is temporarily empty, it safely discovers the index from the legacy POC page ID and refuses to look anywhere else.
 
@@ -131,7 +134,7 @@ Configure the Notion integration with **read content**, **update content**, and 
 
 | Resource | Required properties |
 | --- | --- |
-| **D1** | `Vor- und Nachname` (Title), `Email` (Email), `Jahresurlaub` (Number), `Active` (Checkbox), `Onboarding Status` (Select), `Onboarding Error` (Text), `Onboarded At` (Date), `Worker Key` (Text), `Frontend Page ID` (Text), `Frontend URL` (URL), `Sharing Status` (Select), `User Page ID` (legacy Text), `D3 Database ID` (Text), `D3 Data Source ID` (Text), `D4 Database ID` (Text), `D4 Data Source ID` (Text), `Urlaub Chart View ID` (Text), `Current Month` (Text), `Last Archived Month` (Text), `Last Rollover At` (Date), `Rollover Status` (Select: `Ready` / `Running` / `Error`), `Rollover Error` (Text), `Rollover Manifest` (hidden Text checkpoint), `Offboarding Status` (Select: `Active` / `Revoke Access` / `Final Sync` / `Complete` / `Error`), `Offboarding Error` (Text), `Final Sync At` (Date), `Frontend Access Revoked` / `D3 Access Revoked` / `D4 Access Revoked` (Checkboxes) |
+| **D1** | `Vor- und Nachname` (Title), `Email` (Email), `Jahresurlaub` (Number), `Active` (Checkbox), `Onboarding Status` (Select), `Onboarding Error` (Text), `Onboarded At` (Date), `Worker Key` (Text), `Frontend Page ID` (Text), `Frontend URL` (URL), `Sharing Status` (Select), `User Page ID` (legacy Text), `D3 Database ID` (Text), `D3 Data Source ID` (Text), `D4 Database ID` (Text), `D4 Data Source ID` (Text), `Urlaub Chart View ID` (Text), `Current Month` (Text), `Last Archived Month` (Text), `Last Rollover At` (Date), `Rollover Status` (Select: `Ready` / `Running` / `Error`), `Rollover Error` (Text), `Rollover Manifest` (hidden Text checkpoint), `Offboarding Status` (Select: `Active` / `Revoke Access` / `Final Sync` / `Complete` / `Error`), `Offboarding Error` (Text), `Final Sync At` (Date), `Frontend Access Revoked` / `D3 Access Revoked` / `D4 Access Revoked` (Checkboxes), plus the SMS fields described below. |
 | **Employee Front-ends** | `Vor- und Nachname` (Title), `Email` (Email, visible), `Jahresurlaub` (Number, visible), `Worker Key` (Text, hidden from worker), `D1 Record ID` (Text, hidden from worker) |
 | **D3** created by onboarding | `Wochentag` (Title), `Datum` (Date), `Stunden` (Number), `Standort` (Select: active locations plus gray `Teil-Tag`, `Urlaub`, `Sonderurlaub`, `Überstundenausgleich`, `Feiertag`, and `Krank`) |
 | **D4** | `Wochentag` (Title), `Datum` (Date), `Stunden` (Number), `Standort` (Select), `Sync Key` (Text), `Source Page ID` (Text). Newly created archives do not have a `Monat` formula. |
@@ -139,6 +142,27 @@ Configure the Notion integration with **read content**, **update content**, and 
 | **D8** | `Standort` (Title), `Active` (Checkbox), `Arbeitszeiten (D7)` (Relation), `Gearbeitete Stunden` (Rollup: Sum of related D7 `Stunden`). The old optional `Mitarbeitende (einmalig)` rollup may remain but is no longer used or created. |
 
 `Onboarding Status` must include `Pending`, `Provisioning`, `Ready`, and `Error`. `Sharing Status` includes `Not Invited`, `Ready for Invite`, `Invited`, and `Revoked`. D3 and D7 `Standort` use the same combined location/work-choice list. Onboarding validation and Daily sync add the offboarding properties/options idempotently when they are missing.
+
+## Monthly SMS reminders
+
+`SMS reminders for incomplete time entries` runs at **08:17 in Europe/Berlin twice per month**: on the third Friday, and again exactly five calendar days before the final day of the month. It can also be started through **Actions → Run workflow** on or after the third Friday. It checks the current Berlin calendar month in each worker's existing D3 `Aktueller Monat` table; it does not wait for or use Month Rollover/D4.
+
+Each check requires the **entire current month** to be complete: every Monday–Friday date from the first through the final calendar day must have a D3 row with both `Stunden` and `Standort`, including dates later in the month. It ignores days before the existing D1 `Onboarded At` date. A required date is incomplete when it has no D3 row, or when any D3 row for that date lacks either `Stunden` or `Standort`; this also catches an unfinished additional `Teil-Tag` row. It considers only D1 rows with `Active = true` and `Onboarding Status = Ready`, and refuses to use a worker whose D1 `Current Month` does not match the current Berlin month.
+
+The action creates these D1 properties on its first successful schema check; do not create a second copy with a different name:
+
+| D1 property | Type and use |
+| --- | --- |
+| `SMS Telefonnummer` | **Phone**. Management must enter every recipient in E.164 form, for example `+491701234567`. It stays in private D1 and is never copied to the worker front-end. |
+| `SMS Reminder Month` | **Text**. The protected reminder cycle, for example `2026-09:third-friday` or `2026-09:five-days-before-month-end`. |
+| `SMS Reminder Status` | **Select**: `Sending`, `Accepted`, `Failed`, or `Uncertain`. `Accepted` means Twilio accepted the Message request; it is not a delivery receipt. |
+| `SMS Reminder Sent At` | **Date** when Twilio accepted the request. |
+| `SMS Reminder Twilio SID` | **Text** identifier for the accepted Twilio Message. |
+| `SMS Reminder Error` | **Text** with a safe-to-review configuration or Twilio failure summary. |
+
+Duplicate protection is deliberately conservative and applies independently to each of the two reminder cycles. Before the Twilio request, the action stores `SMS Reminder Month` and `SMS Reminder Status = Sending` in D1. A manual rerun never sends the same cycle when the status is `Sending`, `Accepted`, `Uncertain`, blank, or unrecognized, including if the runner stopped after a request may have reached Twilio. A confirmed Twilio 4xx failure becomes `Failed`, which may be retried manually after fixing the phone, sender, or Twilio configuration. For `Sending` or `Uncertain`, first check the Twilio Message Log using the D1 sender/recipient context; set the status to `Accepted` if it was sent, or to `Failed` only after confirming no message exists, then run the workflow again. Resolve an `Uncertain` result before the next cycle; the action blocks further reminders for that worker until it is reviewed.
+
+For the first live check, add the three Twilio secrets above, fill `SMS Telefonnummer` for one designated test worker, then open **Actions → SMS reminders for incomplete time entries → Run workflow**. In `target_worker`, enter that worker's exact D1 `Worker Key` (preferred) or exact `Vor- und Nachname`; only that active, ready worker can be selected. Leave `target_worker` blank only when you deliberately want to check all eligible workers. A Twilio trial can send only to verified recipient numbers; upgrade or complete Twilio's required sender/recipient setup before expecting employee delivery. The workflow does not print phone numbers, SMS text, Auth Tokens, or Twilio API responses.
 
 ## Legacy `Tagtyp` removal
 
@@ -160,17 +184,18 @@ Running the script without `TAGTYP_MIGRATION_EXECUTE=true` is a read-only prefli
 
 ## Schedules and manual runs
 
-GitHub Actions cron is always **UTC**.
+GitHub Actions cron defaults to **UTC**. Existing workflows below use the UTC/DST cadence guard; the SMS workflow uses GitHub's timezone-aware schedule directly.
 
-| Workflow | UTC cron | Intended cadence |
+| Workflow | Schedule | Intended cadence |
 | --- | --- | --- |
 | Onboard workers | — | Manual only, when a prepared worker should be provisioned |
 | Copy old archive to one worker | — | Manual, one named worker and one destination D4 per run; never scheduled |
 | Daily sync | `15 5,6,13,14 * * 1-5` | Exactly 07:15 and 15:15 Europe/Berlin on weekdays; two UTC entries are safely skipped for DST |
 | Standort sync | After the Daily D3→D7 command finishes | Separate GitHub workflow; also manual; targeted by default, with an optional full-history D7 relation audit |
 | Month rollover | `15 22,23 * * *` | Exactly 00:15 Europe/Berlin every day, including weekends; one UTC entry is safely skipped for DST |
+| SMS reminders for incomplete time entries | `17 8 * * *`, timezone `Europe/Berlin`, with a two-date cadence gate | 08:17 Berlin time on the third Friday and five calendar days before month-end; checks every current-month D3 weekday and is also manual |
 
-GitHub Actions cron is **always UTC**. The schedules deliberately include both possible UTC offsets, then a tiny cadence job uses `Europe/Berlin` to allow only the matching entry: Daily Worker Sync therefore runs at **07:15 and 15:15 Berlin time** throughout the year, and Month Rollover runs at **00:15 Berlin time**. The completed Daily command publishes a short-lived marker even when one worker failed after another worker's D7 writes succeeded; that marker starts the independent Standort Sync, while the Daily run remains red. A skipped daylight-saving helper run has no marker and cannot perform a Standort sync. Rollover remains daily, rather than only on the first of the month, so it catches up safely after a missed GitHub run. Use **Run workflow** in GitHub Actions for exceptional local-time or holiday runs.
+The existing daily and rollover schedules deliberately include both possible UTC offsets, then a tiny cadence job uses `Europe/Berlin` to allow only the matching entry: Daily Worker Sync therefore runs at **07:15 and 15:15 Berlin time** throughout the year, and Month Rollover runs at **00:15 Berlin time**. The SMS workflow uses GitHub's IANA `timezone` setting and wakes daily at 08:17 Berlin time; its cadence job permits only the third Friday (the Friday dated 15–21) and the date exactly five calendar days before month-end. The completed Daily command publishes a short-lived marker even when one worker failed after another worker's D7 writes succeeded; that marker starts the independent Standort Sync, while the Daily run remains red. A skipped daylight-saving helper run has no marker and cannot perform a Standort sync. Rollover remains daily, rather than only on the first of the month, so it catches up safely after a missed GitHub run. Use **Run workflow** in GitHub Actions for exceptional local-time or holiday runs.
 
 All Notion-mutating workflows use one shared `herzer-notion-mutations` concurrency group, so they never run concurrently. GitHub retains at most one pending run in a concurrency group; it is not a durable queue. Daily and rollover schedules repeat, and Standort sync is also manually runnable if a pending run is superseded.
 

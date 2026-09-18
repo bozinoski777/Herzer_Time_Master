@@ -1,0 +1,77 @@
+name: SMS reminders for incomplete time entries
+
+on:
+  schedule:
+    # The cadence job selects exactly the third Friday and five calendar days
+    # before month end. The timezone setting keeps 08:17 in Berlin through DST.
+    - cron: "17 8 * * *"
+      timezone: "Europe/Berlin"
+  workflow_dispatch:
+    inputs:
+      target_worker:
+        description: "Optional exact Worker Key or employee name; use this for a one-worker test."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # This reads and writes each worker's current D3/D1 state. Sharing the
+  # mutation group prevents overlap with daily sync or Month Rollover.
+  group: herzer-notion-mutations
+  cancel-in-progress: false
+
+jobs:
+  cadence:
+    name: Confirm a Berlin SMS reminder date
+    runs-on: ubuntu-latest
+    outputs:
+      run_reminders: ${{ steps.decide.outputs.run_reminders }}
+    steps:
+      - id: decide
+        name: Run on the third Friday or five days before month end
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          run_reminders=false
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            run_reminders=true
+          else
+            berlin_day="$(TZ=Europe/Berlin date +%-d)"
+            berlin_weekday="$(TZ=Europe/Berlin date +%u)"
+            berlin_month="$(TZ=Europe/Berlin date +%Y-%m)"
+            berlin_last_day="$(date -d "${berlin_month}-01 +1 month -1 day" +%-d)"
+
+            if ((
+              (berlin_weekday == 5 && berlin_day >= 15 && berlin_day <= 21) ||
+              (berlin_last_day - berlin_day == 5)
+            )); then
+              run_reminders=true
+            fi
+          fi
+
+          echo "run_reminders=$run_reminders" >> "$GITHUB_OUTPUT"
+
+  remind:
+    name: Check current-month weekdays and send needed SMS reminders
+    needs: cadence
+    if: needs.cadence.outputs.run_reminders == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Send one idempotent reminder per incomplete worker
+        run: node scripts/monthly-sms-reminders.js
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          D1_DATA_SOURCE_ID: ${{ secrets.D1_DATA_SOURCE_ID }}
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TWILIO_FROM_NUMBER: ${{ secrets.TWILIO_FROM_NUMBER }}
+          SMS_REMINDER_TARGET_WORKER: ${{ github.event_name == 'workflow_dispatch' && inputs.target_worker || '' }}
