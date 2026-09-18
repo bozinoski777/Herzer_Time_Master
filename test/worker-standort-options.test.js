@@ -112,9 +112,10 @@ test("new worker frontends put the exact four-section manual checklist in a call
   ]);
   assert.deepEqual(sections.map((section) => section.bulleted_list_item.children.map(blockText)), [
     [
-      "Vorlage Teil-Tag anlegen und Datum auf das aktuelle Datum setzen.",
+      "Vorlage Teil-Tag anlegen:",
       "Spalten: Wochentag, Datum, Stunden, verengen.",
       "Spalten Icons ändern",
+      "Seiten-Icon ausblenden",
       "Sperren.",
     ],
     [
@@ -122,7 +123,13 @@ test("new worker frontends put the exact four-section manual checklist in a call
       "Titel ausblenden.",
       "DB sperren.",
     ],
-    ["Spalten: Wochentag, Datum, Stunden, verengen.", "Spalten Icons ändern", "Sperren."],
+    [
+      "Spalten: Wochentag, Datum, Stunden, verengen.",
+      "Spalten Icons ändern",
+      "Seiten-Icon ausblenden",
+      "Bei Urlaubsansicht das selbe machen",
+      "Sperren.",
+    ],
     [
       "Diese Frontend-Seite an die oben angezeigte E-Mail einladen: Can view.",
       "Archiv an dieselbe E-Mail einladen: Can view.",
@@ -130,8 +137,20 @@ test("new worker frontends put the exact four-section manual checklist in a call
     ],
   ]);
   const items = sections.flatMap((section) => section.bulleted_list_item.children);
-  assert.equal(items.length, 13);
+  assert.equal(items.length, 16);
   assert.ok(items.every((block) => block.type === "to_do" && block.to_do.checked === false));
+  const teilTagChildren = items[0].to_do.children;
+  assert.deepEqual(teilTagChildren.map(blockText), [
+    "Titel auf Teil-Tag setzen",
+    "Datum auf das aktuelle Datum setzen.",
+  ]);
+  assert.ok(teilTagChildren.every((block) => block.type === "to_do" && block.to_do.checked === false));
+  assert.deepEqual(
+    teilTagChildren[0].to_do.rich_text.filter((item) => item.annotations?.bold)
+      .map((item) => item.text.content),
+    ["Teil-Tag"],
+  );
+  assert.equal(items.length + teilTagChildren.length, 18);
   assert.deepEqual(
     sections[1].bulleted_list_item.children[0].to_do.rich_text
       .filter((item) => item.annotations?.bold).map((item) => item.text.content),
@@ -196,10 +215,54 @@ test("checklist provisioning recovers a partial callout without duplicating sect
   assert.equal(fixture.children.get(calloutId).length, 4);
   assert.deepEqual(
     fixture.children.get(calloutId).map((section) => fixture.children.get(section.id).length),
-    [4, 3, 3, 3],
+    [5, 3, 5, 3],
   );
+  const currentMonthSection = fixture.children.get(calloutId)[0];
+  const teilTagItem = fixture.children.get(currentMonthSection.id)[0];
+  assert.equal(fixture.children.get(teilTagItem.id).length, 2);
   const writesBeforeRetry = fixture.appends;
   assert.equal(await ensureManualOnboardingChecklist("frontend", fixture.operations), calloutId);
+  assert.equal(fixture.appends, writesBeforeRetry);
+});
+
+test("an older combined Teil-Tag task is left for manual review, not duplicated", async () => {
+  const oldCallout = manualOnboardingChecklistBlocks()[0];
+  oldCallout.callout.children[0].bulleted_list_item.children = [{
+    type: "to_do",
+    to_do: {
+      rich_text: [{ type: "text", text: {
+        content: "Vorlage Teil-Tag anlegen und Datum auf das aktuelle Datum setzen.",
+      } }],
+      checked: true,
+    },
+  }];
+  const fixture = checklistFixture([oldCallout]);
+  await assert.rejects(
+    ensureManualOnboardingChecklist("frontend", fixture.operations),
+    /earlier combined Teil-Tag checklist item/,
+  );
+  assert.equal(fixture.appends, 0);
+  const callout = fixture.children.get("frontend")[0];
+  const section = fixture.children.get(callout.id)[0];
+  assert.equal(fixture.children.get(section.id)[0].to_do.checked, true);
+});
+
+test("a retry restores a missing nested Teil-Tag task without duplicating its sibling", async () => {
+  const fixture = checklistFixture(manualOnboardingChecklistBlocks());
+  const callout = fixture.children.get("frontend")[0];
+  const section = fixture.children.get(callout.id)[0];
+  const teilTagItem = fixture.children.get(section.id)[0];
+  fixture.children.set(teilTagItem.id, fixture.children.get(teilTagItem.id).slice(0, 1));
+
+  await ensureManualOnboardingChecklist("frontend", fixture.operations);
+  const children = fixture.children.get(teilTagItem.id);
+  assert.deepEqual(children.map((block) => block.to_do.rich_text.map((part) =>
+    part.text.content).join("")), [
+    "Titel auf Teil-Tag setzen",
+    "Datum auf das aktuelle Datum setzen.",
+  ]);
+  const writesBeforeRetry = fixture.appends;
+  await ensureManualOnboardingChecklist("frontend", fixture.operations);
   assert.equal(fixture.appends, writesBeforeRetry);
 });
 

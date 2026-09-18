@@ -105,9 +105,16 @@ const MANUAL_ONBOARDING_CHECKLIST_SECTIONS = [
   {
     title: "Aktueller Monat:",
     items: [
-      { text: "Vorlage Teil-Tag anlegen und Datum auf das aktuelle Datum setzen." },
+      {
+        text: "Vorlage Teil-Tag anlegen:",
+        children: [
+          { text: "Titel auf Teil-Tag setzen", highlight: "Teil-Tag" },
+          { text: "Datum auf das aktuelle Datum setzen." },
+        ],
+      },
       { text: "Spalten: Wochentag, Datum, Stunden, verengen." },
       { text: "Spalten Icons ändern" },
+      { text: "Seiten-Icon ausblenden" },
       { text: "Sperren." },
     ],
   },
@@ -127,6 +134,8 @@ const MANUAL_ONBOARDING_CHECKLIST_SECTIONS = [
     items: [
       { text: "Spalten: Wochentag, Datum, Stunden, verengen." },
       { text: "Spalten Icons ändern" },
+      { text: "Seiten-Icon ausblenden" },
+      { text: "Bei Urlaubsansicht das selbe machen" },
       { text: "Sperren." },
     ],
   },
@@ -146,6 +155,8 @@ const MANUAL_ONBOARDING_CHECKLIST_SECTIONS = [
   },
 ];
 const MANUAL_CHECKLIST_ICON = "☑️";
+const LEGACY_COMBINED_TEIL_TAG_CHECKLIST_TEXT =
+  "Vorlage Teil-Tag anlegen und Datum auf das aktuelle Datum setzen.";
 const LEGACY_MANUAL_CHECKLIST_TEXTS = [
   "In Aktueller Monat die Vorlage Teil-Tag anlegen und Datum auf das aktuelle Datum setzen.",
   "Archiv sperren.",
@@ -287,6 +298,7 @@ function checklistItemBlock(item) {
     to_do: {
       rich_text: checklistRichText(item),
       checked: false,
+      ...(item.children?.length > 0 ? { children: item.children.map(checklistItemBlock) } : {}),
     },
   };
 }
@@ -362,6 +374,18 @@ async function ensureManualOnboardingChecklist(pageId, operations = {}) {
   }
   const callout = callouts[0];
   let sectionBlocks = await listChildren(callout.id);
+  const existingCurrentMonthSections = sectionBlocks.filter((block) =>
+    block.type === "bulleted_list_item" && blockText(block) === "Aktueller Monat:");
+  for (const currentMonthSection of existingCurrentMonthSections) {
+    const existingItems = await listChildren(currentMonthSection.id);
+    if (existingItems.some((block) =>
+      block.type === "to_do" && blockText(block) === LEGACY_COMBINED_TEIL_TAG_CHECKLIST_TEXT)) {
+      throw new Error(
+        `Worker page ${pageId} has the earlier combined Teil-Tag checklist item. ` +
+          "Review it manually before retrying; onboarding will not duplicate or discard its checked state.",
+      );
+    }
+  }
   for (const section of MANUAL_ONBOARDING_CHECKLIST_SECTIONS) {
     const matching = sectionBlocks.filter((block) =>
       block.type === "bulleted_list_item" && blockText(block) === section.title);
@@ -397,6 +421,25 @@ async function ensureManualOnboardingChecklist(pageId, operations = {}) {
     if (section.items.some((item) =>
       items.filter((block) => block.type === "to_do" && blockText(block) === item.text).length !== 1)) {
       throw new Error(`Could not recover every ${section.title} checklist item on worker page ${pageId}`);
+    }
+    for (const item of section.items.filter((candidate) => candidate.children?.length > 0)) {
+      const parent = items.find((block) => block.type === "to_do" && blockText(block) === item.text);
+      let nested = await listChildren(parent.id);
+      for (const child of item.children) {
+        if (nested.filter((block) => block.type === "to_do" && blockText(block) === child.text).length > 1) {
+          throw new Error(`Worker page ${pageId} has a duplicate nested checklist item: ${child.text}`);
+        }
+      }
+      const missingChildren = item.children.filter((child) =>
+        !nested.some((block) => block.type === "to_do" && blockText(block) === child.text));
+      if (missingChildren.length > 0) {
+        await appendChildren(parent.id, missingChildren.map(checklistItemBlock));
+        nested = await listChildren(parent.id);
+      }
+      if (item.children.some((child) =>
+        nested.filter((block) => block.type === "to_do" && blockText(block) === child.text).length !== 1)) {
+        throw new Error(`Could not recover every nested ${item.text} checklist item on worker page ${pageId}`);
+      }
     }
   }
   return callout.id;
