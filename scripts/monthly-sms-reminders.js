@@ -79,13 +79,30 @@ const {
   D1_DATA_SOURCE_ID: D1,
   TWILIO_ACCOUNT_SID: TWILIO_ACCOUNT_SID,
   TWILIO_AUTH_TOKEN: TWILIO_AUTH_TOKEN,
-  TWILIO_FROM_NUMBER: TWILIO_FROM_NUMBER,
 } = requireEnv(
   "D1_DATA_SOURCE_ID",
   "TWILIO_ACCOUNT_SID",
   "TWILIO_AUTH_TOKEN",
-  "TWILIO_FROM_NUMBER",
 );
+
+function twilioSenderConfiguration(environment = process.env) {
+  const messagingServiceSid = String(environment.TWILIO_MESSAGING_SERVICE_SID || "").trim();
+  const fromNumber = String(environment.TWILIO_FROM_NUMBER || "").trim();
+
+  if (messagingServiceSid) {
+    if (!/^MG[0-9a-f]{32}$/i.test(messagingServiceSid)) {
+      throw new Error("TWILIO_MESSAGING_SERVICE_SID must be a Twilio Messaging Service SID beginning with MG.");
+    }
+    return { type: "messaging-service", messagingServiceSid };
+  }
+  if (fromNumber) return { type: "from-number", fromNumber };
+
+  throw new Error(
+    "Missing Twilio sender configuration: set TWILIO_MESSAGING_SERVICE_SID (recommended) or TWILIO_FROM_NUMBER.",
+  );
+}
+
+const TWILIO_SENDER = twilioSenderConfiguration();
 
 class TwilioRequestError extends Error {
   constructor(message, certainty) {
@@ -261,6 +278,7 @@ function reminderBody(targetMonth, incompleteDayCount, frontendUrl) {
   return [
     `Ihre Zeiterfassung für ${displayMonth(targetMonth)} ist noch unvollständig (${days}).`,
     `Bitte ergänzen Sie sie hier: ${frontendUrl}`,
+    "Keine SMS-Erinnerungen? Bitte informieren Sie die Verwaltung.",
   ].join(" ");
 }
 
@@ -330,12 +348,18 @@ function twilioErrorText(payload, fallback) {
   return `Twilio SMS request failed${code}: ${outcome}`.slice(0, 1900);
 }
 
+function twilioMessageParameters({ to, body }, sender = TWILIO_SENDER) {
+  const parameters = { To: to, Body: body };
+  if (sender.type === "messaging-service") {
+    parameters.MessagingServiceSid = sender.messagingServiceSid;
+  } else {
+    parameters.From = sender.fromNumber;
+  }
+  return parameters;
+}
+
 async function sendTwilioSms({ to, body }) {
-  const payload = new URLSearchParams({
-    To: to,
-    From: TWILIO_FROM_NUMBER,
-    Body: body,
-  });
+  const payload = new URLSearchParams(twilioMessageParameters({ to, body }));
   const authorization = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString("base64");
 
   let response;
@@ -634,5 +658,7 @@ module.exports = {
   reminderRequiredDates,
   selectWorkers,
   thirdFriday,
+  twilioMessageParameters,
+  twilioSenderConfiguration,
   validHttpsUrl,
 };

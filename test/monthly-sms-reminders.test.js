@@ -20,6 +20,8 @@ const {
   reminderRequiredDates,
   selectWorkers,
   thirdFriday,
+  twilioMessageParameters,
+  twilioSenderConfiguration,
   validHttpsUrl,
 } = require("../scripts/monthly-sms-reminders");
 
@@ -135,6 +137,36 @@ test("phone numbers and worker links must be safe to send", () => {
   assert.equal(validHttpsUrl("http://www.notion.so/worker"), "");
   assert.match(
     reminderBody("2026-09", 2, "https://www.notion.so/worker"),
-    /September 2026.*2 Arbeitstage.*https:\/\/www\.notion\.so\/worker/,
+    /September 2026.*2 Arbeitstage.*https:\/\/www\.notion\.so\/worker.*Keine SMS-Erinnerungen/,
+  );
+});
+
+test("a Messaging Service is preferred over a direct Twilio sender", () => {
+  const service = twilioSenderConfiguration({
+    TWILIO_MESSAGING_SERVICE_SID: "MG00000000000000000000000000000000",
+    TWILIO_FROM_NUMBER: "+491701234567",
+  });
+  assert.deepEqual(service, {
+    type: "messaging-service",
+    messagingServiceSid: "MG00000000000000000000000000000000",
+  });
+  assert.deepEqual(
+    twilioMessageParameters({ to: "+491701234567", body: "Reminder" }, service),
+    {
+      To: "+491701234567",
+      Body: "Reminder",
+      MessagingServiceSid: "MG00000000000000000000000000000000",
+    },
+  );
+  assert.deepEqual(
+    twilioMessageParameters(
+      { to: "+491701234567", body: "Reminder" },
+      twilioSenderConfiguration({ TWILIO_FROM_NUMBER: "+491701234567" }),
+    ),
+    { To: "+491701234567", Body: "Reminder", From: "+491701234567" },
+  );
+  assert.throws(
+    () => twilioSenderConfiguration({ TWILIO_MESSAGING_SERVICE_SID: "not-a-service" }),
+    /must be a Twilio Messaging Service SID/,
   );
 });
