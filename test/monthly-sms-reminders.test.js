@@ -161,8 +161,47 @@ test("phone numbers and worker links must be safe to send", () => {
   assert.equal(e164PhoneNumber("0170 123 4567"), "");
   assert.equal(validHttpsUrl("https://www.notion.so/worker"), "https://www.notion.so/worker");
   assert.equal(validHttpsUrl("http://www.notion.so/worker"), "");
-  assert.match(
-    reminderBody("2026-09", 2, "https://www.notion.so/worker"),
-    /September 2026.*2 Arbeitstage.*https:\/\/www\.notion\.so\/worker.*Keine SMS-Erinnerungen/,
+});
+
+test("DE sends the chosen short German reminder with the German month", () => {
+  assert.equal(
+    reminderBody("2026-09", "https://www.notion.so/worker", "DE"),
+    "Für September 2026 fehlen noch Angaben in deiner Zeiterfassung. Bitte hier ergänzen: https://www.notion.so/worker",
   );
+});
+
+test("MK sends the chosen short Macedonian reminder with the Macedonian month", () => {
+  assert.equal(
+    reminderBody("2026-09", "https://www.notion.so/worker", "MK"),
+    "Во твојата евиденција на работното време за септември 2026 г. недостигаат податоци. Те молиме дополни ги тука: https://www.notion.so/worker",
+  );
+});
+
+test("a worker's D1 Language selection determines the reminder, defaulting to German", () => {
+  const cases = [
+    [{ select: { name: "MK" } }, "MK"],
+    [{ select: { name: "DE" } }, "DE"],
+    [{ select: null }, "DE"],
+    [undefined, "DE"],
+    [{ select: { name: "" } }, "DE"],
+    [{ select: { name: "EN" } }, "DE"],
+    [{ select: { name: " mk " } }, "MK"],
+  ];
+  for (const [property, expectedLanguage] of cases) {
+    const worker = workerFromRow({
+      id: "test-worker",
+      properties: property ? { Language: property } : {},
+    });
+    assert.equal(worker.language, expectedLanguage);
+    assert.equal(
+      reminderBody("2026-09", "https://www.notion.so/worker", worker.language),
+      reminderBody("2026-09", "https://www.notion.so/worker", expectedLanguage),
+    );
+  }
+  for (const language of [undefined, null, "", "EN"]) {
+    assert.equal(
+      reminderBody("2026-09", "https://www.notion.so/worker", language),
+      reminderBody("2026-09", "https://www.notion.so/worker", "DE"),
+    );
+  }
 });

@@ -60,6 +60,7 @@ const REMINDER_STATUS_OPTIONS = Object.freeze([
 const D1_BASE_SCHEMA = Object.freeze({
   "Vor- und Nachname": "title",
   Active: "checkbox",
+  Language: "select",
   "Onboarding Status": "select",
   "Onboarded At": "date",
   "Frontend URL": "url",
@@ -234,22 +235,25 @@ function validHttpsUrl(value) {
   }
 }
 
-function displayMonth(targetMonth) {
+function reminderLanguage(language) {
+  return String(language || "").trim().toUpperCase() === "MK" ? "MK" : "DE";
+}
+
+function displayMonth(targetMonth, language = "DE") {
   const date = new Date(`${targetMonth}-01T12:00:00Z`);
-  return new Intl.DateTimeFormat("de-DE", {
+  return new Intl.DateTimeFormat(reminderLanguage(language) === "MK" ? "mk-MK" : "de-DE", {
     timeZone: BERLIN_TIME_ZONE,
     month: "long",
     year: "numeric",
   }).format(date);
 }
 
-function reminderBody(targetMonth, incompleteDayCount, frontendUrl) {
-  const days = incompleteDayCount === 1 ? "1 Arbeitstag" : `${incompleteDayCount} Arbeitstage`;
-  return [
-    `Ihre Zeiterfassung für ${displayMonth(targetMonth)} ist noch unvollständig (${days}).`,
-    `Bitte ergänzen Sie sie hier: ${frontendUrl}`,
-    "Keine SMS-Erinnerungen? Bitte informieren Sie die Verwaltung.",
-  ].join(" ");
+function reminderBody(targetMonth, frontendUrl, language = "DE") {
+  const month = displayMonth(targetMonth, language);
+  if (reminderLanguage(language) === "MK") {
+    return `Во твојата евиденција на работното време за ${month} недостигаат податоци. Те молиме дополни ги тука: ${frontendUrl}`;
+  }
+  return `Für ${month} fehlen noch Angaben in deiner Zeiterfassung. Bitte hier ergänzen: ${frontendUrl}`;
 }
 
 function workerFromRow(row) {
@@ -257,6 +261,7 @@ function workerFromRow(row) {
     ...workerReferencesFromD1(row),
     active: row.properties.Active?.checkbox === true,
     smsNotification: row.properties[SMS_NOTIFICATION_PROPERTY]?.checkbox === true,
+    language: reminderLanguage(row.properties.Language?.select?.name),
     onboardingStatus: row.properties["Onboarding Status"]?.select?.name || "",
     onboardedAt: row.properties["Onboarded At"]?.date?.start || "",
     frontendUrl: row.properties["Frontend URL"]?.url || "",
@@ -444,7 +449,7 @@ async function processWorker(worker, run, twilio) {
   try {
     const message = await twilio.sendSms({
       to: phone,
-      body: reminderBody(run.targetMonth, incompleteDates.length, frontendUrl),
+      body: reminderBody(run.targetMonth, frontendUrl, worker.language),
     });
     await updatePage(
       worker.rowId,

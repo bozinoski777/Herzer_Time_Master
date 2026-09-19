@@ -149,7 +149,14 @@ Configure the Notion integration with **read content**, **update content**, and 
 
 Each check requires the **entire current month** to be complete: every Monday–Friday date from the first through the final calendar day must have a D3 row with both `Stunden` and `Standort`, including dates later in the month. It ignores days before the existing D1 `Onboarded At` date. A required date is incomplete when it has no D3 row, or when any D3 row for that date lacks either `Stunden` or `Standort`; this also catches an unfinished additional `Teil-Tag` row. It considers only D1 rows with **both `Active = true` and `SMS Notification = true`**, plus `Onboarding Status = Ready`, and refuses to use a worker whose D1 `Current Month` does not match the current Berlin month.
 
-The action creates these D1 properties on its first successful schema check; do not create a second copy with a different name:
+D1 must also have a **`Language` Select** with options **`MK`** and **`DE`**. Select `MK` for Macedonian or `DE` for German. A blank selection defaults to German; unsupported values also fall back to German. The workflow reads each worker's selection without changing it, and localizes the month name too.
+
+Messages use the short wording below, with the current month/year and the worker's frontend link substituted:
+
+- **DE:** Für (Monat) fehlen noch Angaben in deiner Zeiterfassung. Bitte hier ergänzen: (Link)
+- **MK:** Во твојата евиденција на работното време за (месец) недостигаат податоци. Те молиме дополни ги тука: (линк)
+
+The action creates these additional D1 properties on its first successful schema check; do not create a second copy with a different name:
 
 | D1 property | Type and use |
 | --- | --- |
@@ -163,7 +170,7 @@ The action creates these D1 properties on its first successful schema check; do 
 
 Duplicate protection is deliberately conservative and applies independently to each of the two reminder cycles. Before the Twilio request, the action stores `SMS Reminder Month` and `SMS Reminder Status = Sending` in D1. A manual rerun never sends the same cycle when the status is `Sending`, `Accepted`, `Uncertain`, blank, or unrecognized, including if the runner stopped after a request may have reached Twilio. A confirmed Twilio 4xx failure becomes `Failed`, which may be retried manually after fixing the phone, sender, or Twilio configuration. For `Sending` or `Uncertain`, first check the Twilio Message Log using the D1 sender/recipient context; set the status to `Accepted` if it was sent, or to `Failed` only after confirming no message exists, then run the workflow again. Resolve an `Uncertain` result before the next cycle; the action blocks further reminders for that worker until it is reviewed.
 
-The workflow uses the configured **US1 account Auth Token and Messaging Service**. Keep the three Twilio secrets above in GitHub Actions. The account's Primary Customer Profile in Trust Hub must be approved, and the Messaging Service must have an approved sender in its Sender Pool. Twilio selects the sender through `MessagingServiceSid`. Workers must have agreed to receive these messages, and the text includes a non-SMS route to opt out through management.
+The workflow uses the configured **US1 account Auth Token and Messaging Service**. Keep the three Twilio secrets above in GitHub Actions. The account's Primary Customer Profile in Trust Hub must be approved, and the Messaging Service must have an approved sender in its Sender Pool. Twilio selects the sender through `MessagingServiceSid`. Workers must have agreed to receive these messages; management can disable them by unchecking `SMS Notification`.
 
 For a manual run, open **Actions → SMS reminders for incomplete time entries → Run workflow**. The optional `target_worker` accepts an exact D1 `Worker Key` (preferred) or exact `Vor- und Nachname`; only that active, ready worker with `SMS Notification` checked can be selected. Leave it blank to check all eligible workers. Uncheck `SMS Notification` to disable reminders for a worker without changing their employment status. Missing or unchecked consent is never bypassed by a manual target. The existing reminder status still prevents duplicate sends.
 
