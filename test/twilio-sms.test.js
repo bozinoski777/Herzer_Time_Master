@@ -2,13 +2,10 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { spawnSync } = require("node:child_process");
-const { createTwilioClient, twilioAuthentication } = require("../scripts/twilio-sms");
+const { createTwilioClient, TwilioRequestError } = require("../scripts/twilio-sms");
 
 const environment = {
   TWILIO_ACCOUNT_SID: `AC${"1".repeat(32)}`,
-  TWILIO_API_KEY_SID: `SK${"2".repeat(32)}`,
-  TWILIO_API_KEY_SECRET: "api-key-secret",
   TWILIO_AUTH_TOKEN: "account-auth-token",
   TWILIO_MESSAGING_SERVICE_SID: `MG${"3".repeat(32)}`,
 };
@@ -21,9 +18,7 @@ function response(status, payload) {
 
 function setup(responses, overrides = {}) {
   const calls = [];
-  const logs = [];
   const client = createTwilioClient({ ...environment, ...overrides }, {
-    log: (message) => logs.push(message),
     fetchImpl: async (url, options) => {
       calls.push({ url, ...options });
       assert.ok(responses.length > 0, "Unexpected extra Twilio request");
@@ -32,333 +27,135 @@ function setup(responses, overrides = {}) {
       return next;
     },
   });
-  return { client, calls, logs };
+  return { client, calls };
 }
 
-function credentials(call) {
-  return Buffer.from(call.headers.Authorization.slice("Basic ".length), "base64").toString();
-}
-
-test("401 / 20003 falls back to the account token and reuses it for the next worker", async () => {
-  const { client, calls, logs } = setup([
-    response(401, { code: 20003, message: "Authentication Error" }),
-    response(201, accepted),
-    response(201, accepted),
-  ]);
+test("sends through the US1 Messaging Service with the account Auth Token", async () => {
+  const { client, calls } = setup([response(201, accepted)]);
   assert.deepEqual(await client.sendSms(message), accepted);
+  assert.equal(calls.length, 1);
+  const call = calls[0];
+  assert.equal(call.url, `https://api.twilio.com/2010-04-01/Accounts/${environment.TWILIO_ACCOUNT_SID}/Messages.json`);
+  assert.equal(call.method, "POST");
+  assert.equal(Buffer.from(call.headers.Authorization.slice("Basic ".length), "base64").toString(),
+    `${environment.TWILIO_ACCOUNT_SID}:${environment.TWILIO_AUTH_TOKEN}`);
+  assert.equal(call.headers["Content-Type"], "application/x-www-form-urlencoded");
+  assert.equal(call.redirect, "error");
+  assert.ok(call.signal instanceof AbortSignal);
+  assert.deepEqual(Object.fromEntries(call.body), {
+    To: message.to, Body: message.body, MessagingServiceSid: environment.TWILIO_MESSAGING_SERVICE_SID,
+  });
+});
+
+test("trims accidental whitespace in GitHub secret values", async () => {
+  const overrides = Object.fromEntries(Object.entries(environment).map(([name, value]) => [name, ` ${value}\n`]));
+  const { client, calls } = setup([response(201, accepted)], overrides);
   await client.sendSms(message);
-  assert.equal(calls.length, 3);
-  assert.equal(credentials(calls[0]), `${environment.TWILIO_API_KEY_SID}:api-key-secret`);
-  assert.equal(credentials(calls[1]), `${environment.TWILIO_ACCOUNT_SID}:account-auth-token`);
-  assert.equal(credentials(calls[2]), credentials(calls[1]));
-  assert.equal(calls[0].url, `https://api.twilio.com/2010-04-01/Accounts/${environment.TWILIO_ACCOUNT_SID}/Messages.json`);
-  for (const call of calls) {
-    assert.equal(call.method, "POST");
-    assert.equal(call.headers["Content-Type"], "application/x-www-form-urlencoded");
-    assert.equal(call.redirect, "error");
-    assert.ok(call.signal instanceof AbortSignal);
-    assert.deepEqual(Object.fromEntries(call.body), {
-      To: message.to, Body: message.body, MessagingServiceSid: environment.TWILIO_MESSAGING_SERVICE_SID,
+  assert.equal(Buffer.from(calls[0].headers.Authorization.slice("Basic ".length), "base64").toString(),
+    `${environment.TWILIO_ACCOUNT_SID}:${environment.TWILIO_AUTH_TOKEN}`);
+  assert.equal(calls[0].body.get("MessagingServiceSid"), environment.TWILIO_MESSAGING_SERVICE_SID);
+});
+
+test("validates all required configuration before any request without exposing values", () => {
+  const invalid = "private-invalid-value";
+  const cases = [
+    [{ TWILIO_ACCOUNT_SID: "" }, /TWILIO_ACCOUNT_SID must/],
+    [{ TWILIO_ACCOUNT_SID: invalid }, /TWILIO_ACCOUNT_SID must/],
+    [{ TWILIO_AUTH_TOKEN: " \n" }, /TWILIO_AUTH_TOKEN is required/],
+    [{ TWILIO_MESSAGING_SERVICE_SID: "" }, /TWILIO_MESSAGING_SERVICE_SID must/],
+    [{ TWILIO_MESSAGING_SERVICE_SID: invalid }, /TWILIO_MESSAGING_SERVICE_SID must/],
+  ];
+  for (const [overrides, expected] of cases) {
+    assert.throws(() => setup([], overrides), (error) => {
+      assert.match(error.message, expected);
+      assert.equal(error.message.includes(invalid), false);
+      return true;
     });
   }
-  assert.equal(logs.length, 1);
-  assert.match(logs[0], /trying the configured Auth Token once/);
 });
 
-test("forced auth-token bypasses stale or incomplete API key settings", async () => {
-  const { client, calls } = setup([response(201, accepted)], {
-    TWILIO_AUTH_MODE: "auth-token", TWILIO_API_KEY_SID: "wrong", TWILIO_API_KEY_SECRET: "",
-  });
-  await client.sendSms(message);
-  assert.equal(calls.length, 1);
-  assert.equal(credentials(calls[0]), `${environment.TWILIO_ACCOUNT_SID}:account-auth-token`);
-});
-
-test("explicit api-key mode never falls back to the token", async () => {
-  const { client, calls } = setup([response(401, { code: 20003 })], { TWILIO_AUTH_MODE: "api-key" });
-  await assert.rejects(client.sendSms(message), { certainty: "failed" });
-  assert.equal(calls.length, 1);
-});
-
-test("an API key with no configured token does not retry", async () => {
-  const { client, calls } = setup([response(401, { code: 20003 })], { TWILIO_AUTH_TOKEN: "" });
-  await assert.rejects(client.sendSms(message), { certainty: "failed" });
-  assert.equal(calls.length, 1);
-});
-
-test("both rejected credential pairs produce an actionable error without leaking data", async () => {
-  const privateError = `${message.to} ${message.body} ${environment.TWILIO_API_KEY_SECRET}`;
-  const { client, calls, logs } = setup([
-    response(401, { code: 20003, message: privateError }),
-    response(401, { code: 20003, message: privateError }),
-  ]);
-  await assert.rejects(client.sendSms(message), (error) => {
-    assert.equal(error.certainty, "failed");
-    assert.match(error.message, /authentication=api-key then auth-token; region=us1/);
-    assert.match(error.message, /same account\/subaccount and region/);
-    const output = [...logs, error.message].join("\n");
-    for (const secret of [...Object.values(environment), message.to, message.body]) {
-      assert.equal(output.includes(secret), false);
-    }
-    return true;
-  });
-  assert.equal(calls.length, 2);
-});
-
-for (const [status, code, certainty] of [[400, 21211, "failed"], [403, 20003, "failed"], [429, 20429, "failed"], [500, 20003, "uncertain"], [401, 99999, "failed"]]) {
-  test(`HTTP ${status} / code ${code} never triggers credential fallback`, async () => {
-    const { client, calls } = setup([response(status, { code })]);
-    await assert.rejects(client.sendSms(message), { certainty });
-    assert.equal(calls.length, 1);
-  });
-}
-
-test("a network failure or unreadable response is uncertain and is never retried", async () => {
-  for (const result of [
-    new Error("socket disconnected with private data"),
-    { status: 201, ok: true, text: async () => { throw new Error("connection lost"); } },
-  ]) {
-    const { client, calls } = setup([result]);
+for (const status of [400, 401, 403, 429]) {
+  test(`HTTP ${status} is a confirmed failure with no automatic retry`, async () => {
+    const { client, calls } = setup([response(status, { code: 20003 })]);
     await assert.rejects(client.sendSms(message), (error) => {
-      assert.equal(error.certainty, "uncertain");
-      assert.match(error.message, /no retry was attempted/);
-      assert.doesNotMatch(error.message, /private data|connection lost/);
+      assert.ok(error instanceof TwilioRequestError);
+      assert.equal(error.certainty, "failed");
+      assert.match(error.message, /code 20003/);
+      assert.ok(error.message.includes(`HTTP ${status}`));
       return true;
     });
     assert.equal(calls.length, 1);
-  }
-});
+  });
+}
 
-test("a success without a Message SID is uncertain and is never retried", async () => {
-  const { client, calls } = setup([response(201, { status: "queued" })]);
+test("server errors are uncertain and never retried", async () => {
+  const { client, calls } = setup([response(500, { code: 20500 })]);
   await assert.rejects(client.sendSms(message), { certainty: "uncertain" });
   assert.equal(calls.length, 1);
 });
 
-test("a malformed authentication response does not authorize another send", async () => {
-  const { client, calls } = setup([{ status: 401, ok: false, text: async () => "not JSON" }]);
-  await assert.rejects(client.sendSms(message), { certainty: "failed" });
-  assert.equal(calls.length, 1);
-});
-
-test("credential check reads Messages with the same authentication fallback and never prints records", async () => {
-  const { client, calls, logs } = setup([
-    response(401, { code: 20003 }),
-    response(200, { messages: [{ to: message.to, body: message.body }] }),
-  ], { TWILIO_MESSAGING_SERVICE_SID: "", TWILIO_FROM_NUMBER: "" });
-  assert.deepEqual(await client.checkCredentials(), { authentication: "auth-token", region: "us1" });
-  assert.equal(calls.length, 2);
-  for (const call of calls) {
-    assert.equal(call.method, "GET");
-    assert.match(call.url, /\/Messages.json\?PageSize=1$/);
-    assert.equal(call.body, undefined);
-  }
-  assert.match(logs.at(-1), /no SMS sent/);
-  assert.equal(logs.join("\n").includes(message.to), false);
-  assert.equal(logs.join("\n").includes(message.body), false);
-});
-
-test("a restricted key read-permission failure does not fall back to broader credentials", async () => {
-  const { client, calls } = setup([response(403, { code: 20403 })]);
-  await assert.rejects(client.checkCredentials(), /Messages read permission/);
-  assert.equal(calls.length, 1);
-});
-
-test("credential check rejects unexpected success responses", async () => {
-  const { client } = setup([response(200, {})]);
-  await assert.rejects(client.checkCredentials(), /unexpected response/);
-});
-
-test("IE1 uses the regional host for both checks and sends", async () => {
-  const { client, calls } = setup([response(200, { messages: [] }), response(201, accepted)], { TWILIO_REGION: " IE1 " });
-  await client.checkCredentials();
-  await client.sendSms(message);
-  for (const call of calls) assert.equal(new URL(call.url).hostname, "api.dublin.ie1.twilio.com");
-});
-
-test("invalid credential configuration fails before any request without echoing values", () => {
-  for (const [overrides, expected] of [
-    [{ TWILIO_ACCOUNT_SID: "private-invalid-account" }, /TWILIO_ACCOUNT_SID must/],
-    [{ TWILIO_API_KEY_SID: "private-invalid-key" }, /TWILIO_API_KEY_SID must/],
-    [{ TWILIO_API_KEY_SECRET: "" }, /Set both/],
-    [{ TWILIO_AUTH_MODE: "private-invalid-mode" }, /TWILIO_AUTH_MODE must/],
-    [{ TWILIO_REGION: "private-invalid-region" }, /TWILIO_REGION must/],
-    [{ TWILIO_REGION: "constructor" }, /TWILIO_REGION must/],
-    [{ TWILIO_AUTH_MODE: "auth-token", TWILIO_AUTH_TOKEN: "" }, /Missing Twilio authentication/],
-  ]) {
-    assert.throws(() => createTwilioClient({ ...environment, ...overrides }), (error) => {
-      assert.match(error.message, expected);
-      assert.doesNotMatch(error.message, /private-invalid/);
+test("network failures and response read failures are uncertain without exposing request data", async () => {
+  const failure = new Error(`${message.to} ${message.body} ${environment.TWILIO_AUTH_TOKEN}`);
+  for (const next of [failure, { status: 201, ok: true, text: async () => { throw failure; } }]) {
+    const { client, calls } = setup([next]);
+    await assert.rejects(client.sendSms(message), (error) => {
+      assert.ok(error instanceof TwilioRequestError);
+      assert.equal(error.certainty, "uncertain");
+      assert.match(error.message, /no retry was attempted/);
+      for (const privateValue of [message.to, message.body, environment.TWILIO_AUTH_TOKEN]) {
+        assert.equal(error.message.includes(privateValue), false);
+      }
       return true;
     });
+    assert.equal(calls.length, 1);
   }
 });
 
-test("authentication trims pasted whitespace and uses the supplied account, not process state", () => {
-  assert.deepEqual(twilioAuthentication({
-    ...environment, TWILIO_AUTH_MODE: "auth-token", TWILIO_ACCOUNT_SID: ` ${environment.TWILIO_ACCOUNT_SID}\n`, TWILIO_AUTH_TOKEN: " token\n",
-  }), { type: "auth-token", username: environment.TWILIO_ACCOUNT_SID, password: "token" });
+test("unconfirmed success responses never allow an automatic resend", async () => {
+  for (const rawBody of ["", "not JSON", "null", "{}", '{"sid":123}', '{"sid":""}']) {
+    const { client, calls } = setup([{ status: 201, ok: true, text: async () => rawBody }]);
+    await assert.rejects(client.sendSms(message), { certainty: "uncertain" });
+    assert.equal(calls.length, 1);
+  }
 });
 
-test("the credential-check command works without Notion, a sender, or a reminder date", () => {
-  const script = `
-    globalThis.fetch = async (url, options) => {
-      if (options.method !== "GET") throw new Error("Unexpected side effect");
-      const payload = url.endsWith("/Messages.json?PageSize=1")
-        ? { messages: [] }
-        : { sid: process.env.TWILIO_ACCOUNT_SID, status: "active" };
-      return { ok: true, status: 200, text: async () => JSON.stringify(payload) };
-    };
-    process.argv[1] = require.resolve("./scripts/twilio-sms.js");
-    require("node:module").runMain();
-  `;
-  const result = spawnSync(process.execPath, ["-e", script], {
-    cwd: require("node:path").resolve(__dirname, ".."),
-    env: { TWILIO_ACCOUNT_SID: environment.TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN: environment.TWILIO_AUTH_TOKEN },
-    encoding: "utf8",
+test("a non-JSON rejection preserves the HTTP failure classification", async () => {
+  const { client, calls } = setup([{ status: 403, ok: false, text: async () => "<html>Forbidden</html>" }]);
+  await assert.rejects(client.sendSms(message), {
+    certainty: "failed", message: "Twilio SMS request failed: HTTP 403.",
   });
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /credential check passed/);
-  assert.match(result.stdout, /no SMS sent/);
+  assert.equal(calls.length, 1);
 });
 
-const activeAccount = { sid: environment.TWILIO_ACCOUNT_SID, status: "active", auth_token: "private-account-token" };
-const matchingService = { sid: environment.TWILIO_MESSAGING_SERVICE_SID, account_sid: environment.TWILIO_ACCOUNT_SID };
-
-test("configuration check verifies account and service ownership with reads only", async () => {
-  const { client, calls, logs } = setup([
-    response(200, { messages: [] }), response(200, activeAccount), response(200, matchingService),
-  ], { TWILIO_AUTH_MODE: "auth-token" });
-  await client.checkConfiguration();
-  assert.equal(calls.length, 3);
-  assert.equal(calls[1].url, `https://api.twilio.com/2010-04-01/Accounts/${environment.TWILIO_ACCOUNT_SID}.json`);
-  assert.equal(calls[2].url, `https://messaging.twilio.com/v1/Services/${environment.TWILIO_MESSAGING_SERVICE_SID}`);
-  for (const call of calls) {
-    assert.equal(call.method, "GET");
-    assert.equal(call.body, undefined);
-    assert.equal(credentials(call), `${environment.TWILIO_ACCOUNT_SID}:account-auth-token`);
-  }
-  assert.match(logs.join("\n"), /account status: active/);
-  assert.match(logs.join("\n"), /belongs to the configured account/);
-  for (const secret of [...Object.values(environment), activeAccount.auth_token]) {
-    assert.equal(logs.join("\n").includes(secret), false);
-  }
-});
-
-test("a service belonging to another account fails the check without exposing either account", async () => {
-  const otherAccount = `AC${"9".repeat(32)}`;
-  const { client, calls } = setup([
-    response(200, { messages: [] }), response(200, activeAccount),
-    response(200, { ...matchingService, account_sid: otherAccount }),
-  ], { TWILIO_AUTH_MODE: "auth-token" });
-  await assert.rejects(client.checkConfiguration(), (error) => {
+test("keeps the sending rejection reason while redacting credentials and message content", async () => {
+  const reason = "Primary compliance profile is not approved.";
+  const encodedCredentials = Buffer.from(`${environment.TWILIO_ACCOUNT_SID}:${environment.TWILIO_AUTH_TOKEN}`).toString("base64");
+  const privateValues = [
+    ...Object.values(environment), encodedCredentials, message.to, message.body,
+    "https://www.notion.so/private-worker", "+491709876543", `SK${"9".repeat(32)}`,
+  ];
+  const { client } = setup([response(401, { code: 20003, message: `${reason}\n${privateValues.join(" ")}` })]);
+  await assert.rejects(client.sendSms(message), (error) => {
     assert.equal(error.certainty, "failed");
-    assert.match(error.message, /belongs to a different account/);
-    assert.equal(error.message.includes(otherAccount), false);
-    assert.equal(error.message.includes(environment.TWILIO_ACCOUNT_SID), false);
+    assert.ok(error.message.includes(reason));
+    assert.match(error.message, /code 20003.*HTTP 401/);
+    assert.match(error.message, /\[redacted\]/);
+    for (const privateValue of privateValues) assert.equal(error.message.includes(privateValue), false);
+    assert.equal(error.message.includes("\n"), false);
     return true;
   });
-  assert.ok(calls.every((call) => call.method === "GET"));
 });
 
-for (const status of ["suspended", "closed"]) {
-  test(`configuration check identifies an account that is ${status}`, async () => {
-    const { client, calls } = setup([
-      response(200, { messages: [] }), response(200, { ...activeAccount, status }),
-    ], { TWILIO_AUTH_MODE: "auth-token" });
-    await assert.rejects(client.checkConfiguration(), new RegExp(`account status is ${status}`));
-    assert.equal(calls.length, 2);
-    assert.ok(calls.every((call) => call.method === "GET"));
-  });
-}
-
-for (const status of [401, 403, 404]) {
-  test(`service HTTP ${status} after a successful credential check does not switch credentials`, async () => {
-    const { client, calls } = setup([
-      response(200, { messages: [] }), response(status, { code: status === 404 ? 20404 : 20003 }),
-    ]);
-    await assert.rejects(client.checkConfiguration(), /Messages authentication passed, but the configured Messaging Service is inaccessible/);
-    assert.equal(calls.length, 2);
-    assert.equal(credentials(calls[0]), credentials(calls[1]));
-    assert.ok(calls.every((call) => call.method === "GET"));
-  });
-}
-
-test("API-key configuration checks skip Accounts and keep service requests in IE1", async () => {
-  const { client, calls, logs } = setup([
-    response(200, { messages: [] }), response(200, matchingService),
-  ], { TWILIO_REGION: "ie1" });
-  await client.checkConfiguration();
-  assert.equal(calls.length, 2);
-  assert.equal(new URL(calls[1].url).hostname, "messaging.dublin.ie1.twilio.com");
-  assert.match(logs.join("\n"), /Account status check skipped/);
-});
-
-test("auth-token send denial points to account and sender checks instead of selecting auth-token again", async () => {
-  const { client, calls } = setup([response(401, { code: 20003 })], { TWILIO_AUTH_MODE: "auth-token" });
+test("error codes and long provider messages cannot flood logs with private data", async () => {
+  const { client } = setup([response(400, {
+    code: message.to,
+    message: `Sending denied. ${"More detail. ".repeat(200)}`,
+  })]);
   await assert.rejects(client.sendSms(message), (error) => {
-    assert.match(error.message, /account status and Messaging Service ownership/);
-    assert.doesNotMatch(error.message, /Select auth-token|TWILIO_API_KEY_SECRET/);
+    assert.equal(error.certainty, "failed");
+    assert.match(error.message, /^Twilio SMS request failed: HTTP 400\. Sending denied\./);
+    assert.equal(error.message.includes(message.to), false);
+    assert.ok(error.message.length < 900);
     return true;
   });
-  assert.equal(calls.length, 1);
-});
-
-test("recent error lookup reports only this account's Message POST denials and redacts private values", async () => {
-  const relevant = {
-    account_sid: environment.TWILIO_ACCOUNT_SID, request_method: "POST", error_code: "20003",
-    request_url: `https://api.twilio.com/2010-04-01/Accounts/${environment.TWILIO_ACCOUNT_SID}/Messages.json`,
-    alert_text: `Primary Compliance Profile must be approved. ${environment.TWILIO_AUTH_TOKEN} ${message.to} https://private.example/details AC${"9".repeat(32)}`,
-  };
-  const { client, calls, logs } = setup([response(200, { alerts: [
-    relevant,
-    { ...relevant, account_sid: `AC${"8".repeat(32)}`, alert_text: "other account" },
-    { ...relevant, request_method: "GET", alert_text: "read error" },
-    { ...relevant, error_code: "30007", alert_text: "other error" },
-    { ...relevant, request_url: "https://api.twilio.com/Calls", alert_text: "other resource" },
-  ] })]);
-  await client.checkRecentSendErrors();
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].method, "GET");
-  assert.equal(new URL(calls[0].url).hostname, "monitor.twilio.com");
-  assert.equal(new URL(calls[0].url).searchParams.get("PageSize"), "100");
-  assert.equal(logs.length, 1);
-  assert.match(logs[0], /Primary Compliance Profile must be approved/);
-  for (const hidden of [environment.TWILIO_AUTH_TOKEN, message.to, "private.example", `AC${"9".repeat(32)}`, "other account", "read error"]) {
-    assert.equal(logs[0].includes(hidden), false);
-  }
-});
-
-test("no matching historical errors does not claim that sending is permitted", async () => {
-  const { client, logs } = setup([response(200, { alerts: [] })]);
-  await client.checkRecentSendErrors();
-  assert.match(logs[0], /no matching.*latest 100 error records/);
-});
-
-test("error-history access denial does not switch to the account token", async () => {
-  const { client, calls } = setup([response(401, { code: 20003 })]);
-  await assert.rejects(client.checkRecentSendErrors(), /recent error lookup failed/);
-  assert.equal(calls.length, 1);
-});
-
-test("IE1 does not send credentials to the US1 Monitor API", async () => {
-  const { client, calls, logs } = setup([], { TWILIO_REGION: "ie1" });
-  await client.checkRecentSendErrors();
-  assert.equal(calls.length, 0);
-  assert.match(logs[0], /skipped outside US1/);
-});
-
-test("send failure keeps the provider's reason while removing credentials, recipient, and SMS text", async () => {
-  const { client, calls } = setup([response(401, {
-    code: 20003,
-    message: `Permission denied: account sending is restricted. To=${message.to}; Body=${message.body}; token=${environment.TWILIO_AUTH_TOKEN}; account=${environment.TWILIO_ACCOUNT_SID}`,
-  })], { TWILIO_AUTH_MODE: "auth-token" });
-  await assert.rejects(client.sendSms(message), (error) => {
-    assert.match(error.message, /Twilio detail \(redacted\): Permission denied: account sending is restricted/);
-    for (const secret of [message.to, message.body, environment.TWILIO_AUTH_TOKEN, environment.TWILIO_ACCOUNT_SID]) {
-      assert.equal(error.message.includes(secret), false);
-    }
-    return true;
-  });
-  assert.equal(calls.length, 1);
 });

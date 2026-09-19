@@ -14,7 +14,6 @@
     "sync-standorte": "node scripts/sync-standorte.js",
     "sync-management": "node scripts/sync-management.js",
     "month-rollover": "node scripts/month-rollover.js",
-    "check-twilio": "node scripts/twilio-sms.js",
     "monthly-sms-reminders": "node scripts/monthly-sms-reminders.js",
     "document-control-automation": "node scripts/document-control-automation.js",
     "import-old-archive": "node scripts/import-old-archive.js"

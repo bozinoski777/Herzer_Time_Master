@@ -9,24 +9,9 @@ on:
   workflow_dispatch:
     inputs:
       target_worker:
-        description: "Optional exact Worker Key or employee name; use this for a one-worker test."
+        description: "Optional exact Worker Key or employee name; leave blank for all eligible workers."
         required: false
         type: string
-      check_credentials_only:
-        description: "Check Twilio credentials, account status, and Messaging Service ownership; no SMS sent."
-        required: false
-        type: boolean
-        default: false
-      auth_mode:
-        description: "Authentication override; repository-default uses TWILIO_AUTH_MODE or auto."
-        required: false
-        type: choice
-        default: repository-default
-        options:
-          - repository-default
-          - auto
-          - api-key
-          - auth-token
 
 permissions:
   contents: read
@@ -76,27 +61,17 @@ jobs:
     if: needs.cadence.outputs.run_reminders == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    env:
-      TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
-      TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
-      TWILIO_API_KEY_SID: ${{ secrets.TWILIO_API_KEY_SID }}
-      TWILIO_API_KEY_SECRET: ${{ secrets.TWILIO_API_KEY_SECRET }}
-      TWILIO_MESSAGING_SERVICE_SID: ${{ secrets.TWILIO_MESSAGING_SERVICE_SID }}
-      TWILIO_FROM_NUMBER: ${{ secrets.TWILIO_FROM_NUMBER }}
-      TWILIO_AUTH_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode != 'repository-default' && inputs.auth_mode || vars.TWILIO_AUTH_MODE || 'auto' }}
-      TWILIO_REGION: ${{ vars.TWILIO_REGION || 'us1' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Check Twilio credentials, account, and Messaging Service without sending SMS
-        if: github.event_name == 'workflow_dispatch' && inputs.check_credentials_only
-        run: node scripts/twilio-sms.js
       - name: Send one idempotent reminder per incomplete worker
-        if: github.event_name != 'workflow_dispatch' || !inputs.check_credentials_only
         run: node scripts/monthly-sms-reminders.js
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           D1_DATA_SOURCE_ID: ${{ secrets.D1_DATA_SOURCE_ID }}
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TWILIO_MESSAGING_SERVICE_SID: ${{ secrets.TWILIO_MESSAGING_SERVICE_SID }}
           SMS_REMINDER_TARGET_WORKER: ${{ github.event_name == 'workflow_dispatch' && inputs.target_worker || '' }}

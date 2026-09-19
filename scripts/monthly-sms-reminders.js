@@ -78,9 +78,6 @@ const D1_REMINDER_SCHEMA = Object.freeze({
 const {
   TwilioRequestError,
   createTwilioClient,
-  twilioAuthentication,
-  twilioMessageParameters,
-  twilioSenderConfiguration,
 } = require("./twilio-sms");
 
 function berlinDateParts(now = new Date()) {
@@ -505,7 +502,6 @@ async function main() {
   }
   const { D1_DATA_SOURCE_ID: D1 } = requireEnv("D1_DATA_SOURCE_ID");
   const twilio = createTwilioClient();
-  twilioSenderConfiguration();
   await ensureD1ReminderSchema(D1);
   const rows = await queryAll(D1, {
     property: "Onboarding Status",
@@ -564,8 +560,5 @@ module.exports = {
   reminderRequiredDates,
   selectWorkers,
   thirdFriday,
-  twilioAuthentication,
-  twilioMessageParameters,
-  twilioSenderConfiguration,
   validHttpsUrl,
 };
