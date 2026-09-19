@@ -64,6 +64,21 @@ function twilioMessageParameters({ to, body }, sender = twilioSenderConfiguratio
   return parameters;
 }
 
+function safeDiagnosticText(text, environment) {
+  let result = String(text || "");
+  for (const [name, secret] of Object.entries(environment)) {
+    if (/TWILIO/.test(name) && String(secret || "").trim()) {
+      result = result.split(String(secret).trim()).join("[redacted]");
+    }
+  }
+  return result
+    .replace(/https?:\/\/[^\s<>"']+/gi, "[URL]")
+    .replace(/\b[A-Z]{2}[0-9a-f]{32}\b/gi, "[SID]")
+    .replace(/[A-Za-z0-9+/=_-]{24,}/g, "[redacted]")
+    .replace(/(?:\+|\b)\d[\d\s().-]{5,}\d\b/g, "[number]")
+    .replace(/[\r\n\t]+/g, " ").slice(0, 800);
+}
+
 class TwilioRequestError extends Error {
   constructor(message, certainty) {
     super(message);
@@ -208,6 +223,37 @@ function createTwilioClient(environment = process.env, { fetchImpl = globalThis.
       log("Twilio configuration checks passed; no SMS sent. Sender-pool readiness, send permission, and delivery remain unverified.");
       return result;
     },
+    async checkRecentSendErrors() {
+      if (region !== "us1") {
+        log("Recent error lookup skipped outside US1; inspect the regional Twilio Debugger.");
+        return;
+      }
+      const parameters = new URLSearchParams({
+        StartDate: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().replace(/\.\d{3}Z$/, "Z"),
+        LogLevel: "error",
+        PageSize: "100",
+      });
+      const payload = await request("GET", undefined, {
+        requestUrl: `https://monitor.twilio.com/v1/Alerts?${parameters}`,
+        operation: "recent error lookup",
+        allowFallback: false,
+      });
+      if (!Array.isArray(payload?.alerts)) {
+        throw new TwilioRequestError("Twilio recent error lookup returned an unexpected response; no SMS sent.", "uncertain");
+      }
+      const failures = payload.alerts.filter((alert) => {
+        if (alert.account_sid !== sid || alert.request_method !== "POST" || Number(alert.error_code) !== 20003) return false;
+        try {
+          return new URL(alert.request_url).pathname.replace(/\/$/, "").replace(/\.json$/, "") === `/2010-04-01/Accounts/${sid}/Messages`;
+        } catch { return false; }
+      }).slice(0, 5);
+      if (failures.length === 0) {
+        log("Twilio recent send errors: no matching 20003 Message POST errors found in the latest 100 error records from the last 24 hours.");
+      }
+      for (const failure of failures) {
+        log(`Twilio recorded send error 20003 (historical): ${safeDiagnosticText(failure.alert_text, environment) || "No description recorded; inspect Twilio's Debugger."}`);
+      }
+    },
     async sendSms(message) {
       const sender = twilioSenderConfiguration(environment);
       const payload = await request("POST", new URLSearchParams(twilioMessageParameters(message, sender)));
@@ -220,7 +266,15 @@ function createTwilioClient(environment = process.env, { fetchImpl = globalThis.
 }
 
 if (require.main === module) {
-  Promise.resolve().then(() => createTwilioClient().checkConfiguration()).catch((failure) => {
+  Promise.resolve().then(async () => {
+    const client = createTwilioClient();
+    await client.checkConfiguration();
+    try {
+      await client.checkRecentSendErrors();
+    } catch (failure) {
+      console.log(`Optional error-history lookup unavailable: ${failure.message}`);
+    }
+  }).catch((failure) => {
     console.error(failure.message);
     process.exitCode = 1;
   });

@@ -303,3 +303,47 @@ test("auth-token send denial points to account and sender checks instead of sele
   });
   assert.equal(calls.length, 1);
 });
+
+test("recent error lookup reports only this account's Message POST denials and redacts private values", async () => {
+  const relevant = {
+    account_sid: environment.TWILIO_ACCOUNT_SID, request_method: "POST", error_code: "20003",
+    request_url: `https://api.twilio.com/2010-04-01/Accounts/${environment.TWILIO_ACCOUNT_SID}/Messages.json`,
+    alert_text: `Primary Compliance Profile must be approved. ${environment.TWILIO_AUTH_TOKEN} ${message.to} https://private.example/details AC${"9".repeat(32)}`,
+  };
+  const { client, calls, logs } = setup([response(200, { alerts: [
+    relevant,
+    { ...relevant, account_sid: `AC${"8".repeat(32)}`, alert_text: "other account" },
+    { ...relevant, request_method: "GET", alert_text: "read error" },
+    { ...relevant, error_code: "30007", alert_text: "other error" },
+    { ...relevant, request_url: "https://api.twilio.com/Calls", alert_text: "other resource" },
+  ] })]);
+  await client.checkRecentSendErrors();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].method, "GET");
+  assert.equal(new URL(calls[0].url).hostname, "monitor.twilio.com");
+  assert.equal(new URL(calls[0].url).searchParams.get("PageSize"), "100");
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /Primary Compliance Profile must be approved/);
+  for (const hidden of [environment.TWILIO_AUTH_TOKEN, message.to, "private.example", `AC${"9".repeat(32)}`, "other account", "read error"]) {
+    assert.equal(logs[0].includes(hidden), false);
+  }
+});
+
+test("no matching historical errors does not claim that sending is permitted", async () => {
+  const { client, logs } = setup([response(200, { alerts: [] })]);
+  await client.checkRecentSendErrors();
+  assert.match(logs[0], /no matching.*latest 100 error records/);
+});
+
+test("error-history access denial does not switch to the account token", async () => {
+  const { client, calls } = setup([response(401, { code: 20003 })]);
+  await assert.rejects(client.checkRecentSendErrors(), /recent error lookup failed/);
+  assert.equal(calls.length, 1);
+});
+
+test("IE1 does not send credentials to the US1 Monitor API", async () => {
+  const { client, calls, logs } = setup([], { TWILIO_REGION: "ie1" });
+  await client.checkRecentSendErrors();
+  assert.equal(calls.length, 0);
+  assert.match(logs[0], /skipped outside US1/);
+});
