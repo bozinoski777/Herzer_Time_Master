@@ -164,6 +164,15 @@ function createTwilioClient(environment = process.env, { fetchImpl = globalThis.
             ? " The credential check needs Messages read permission; a send-only restricted key may still send SMS."
             : " This check requires read permission for the requested resource.";
         }
+        if (method === "POST" && typeof payload?.message === "string") {
+          const detail = safeDiagnosticText(payload.message, {
+            ...environment,
+            TWILIO_REQUEST_TO: body?.get("To"),
+            TWILIO_REQUEST_FROM: body?.get("From"),
+            TWILIO_REQUEST_BODY: body?.get("Body"),
+          });
+          if (detail) message += ` Twilio detail (redacted): ${detail}`;
+        }
         throw new TwilioRequestError(message, response.status >= 400 && response.status < 500 ? "failed" : "uncertain");
       }
       return payload;

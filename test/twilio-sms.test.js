@@ -347,3 +347,18 @@ test("IE1 does not send credentials to the US1 Monitor API", async () => {
   assert.equal(calls.length, 0);
   assert.match(logs[0], /skipped outside US1/);
 });
+
+test("send failure keeps the provider's reason while removing credentials, recipient, and SMS text", async () => {
+  const { client, calls } = setup([response(401, {
+    code: 20003,
+    message: `Permission denied: account sending is restricted. To=${message.to}; Body=${message.body}; token=${environment.TWILIO_AUTH_TOKEN}; account=${environment.TWILIO_ACCOUNT_SID}`,
+  })], { TWILIO_AUTH_MODE: "auth-token" });
+  await assert.rejects(client.sendSms(message), (error) => {
+    assert.match(error.message, /Twilio detail \(redacted\): Permission denied: account sending is restricted/);
+    for (const secret of [message.to, message.body, environment.TWILIO_AUTH_TOKEN, environment.TWILIO_ACCOUNT_SID]) {
+      assert.equal(error.message.includes(secret), false);
+    }
+    return true;
+  });
+  assert.equal(calls.length, 1);
+});
