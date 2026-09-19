@@ -3,13 +3,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-// The module validates its runtime secrets at load time. These placeholders
-// exercise only the exported pure helpers and never make an HTTP request.
-process.env.D1_DATA_SOURCE_ID = "test-d1";
-process.env.TWILIO_ACCOUNT_SID = "AC00000000000000000000000000000000";
-process.env.TWILIO_AUTH_TOKEN = "test-token";
-process.env.TWILIO_FROM_NUMBER = "+491701234567";
-
 const {
   REMINDER_STATUS,
   currentReminderRun,
@@ -175,6 +168,7 @@ test("a Messaging Service is preferred over a direct Twilio sender", () => {
 test("a Twilio API key is preferred over an Auth Token for production authentication", () => {
   assert.deepEqual(
     twilioAuthentication({
+      TWILIO_ACCOUNT_SID: "AC00000000000000000000000000000000",
       TWILIO_API_KEY_SID: "SK00000000000000000000000000000000",
       TWILIO_API_KEY_SECRET: "api-key-secret",
       TWILIO_AUTH_TOKEN: "old-token",
@@ -182,11 +176,11 @@ test("a Twilio API key is preferred over an Auth Token for production authentica
     { type: "api-key", username: "SK00000000000000000000000000000000", password: "api-key-secret" },
   );
   assert.deepEqual(
-    twilioAuthentication({ TWILIO_AUTH_TOKEN: "live-auth-token" }),
+    twilioAuthentication({ TWILIO_ACCOUNT_SID: "AC00000000000000000000000000000000", TWILIO_AUTH_TOKEN: "live-auth-token" }),
     { type: "auth-token", username: "AC00000000000000000000000000000000", password: "live-auth-token" },
   );
   assert.throws(
-    () => twilioAuthentication({ TWILIO_API_KEY_SID: "SK00000000000000000000000000000000" }),
+    () => twilioAuthentication({ TWILIO_ACCOUNT_SID: "AC00000000000000000000000000000000", TWILIO_API_KEY_SID: "SK00000000000000000000000000000000" }),
     /Set both TWILIO_API_KEY_SID and TWILIO_API_KEY_SECRET/,
   );
 });

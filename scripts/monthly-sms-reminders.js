@@ -76,59 +76,12 @@ const D1_REMINDER_SCHEMA = Object.freeze({
 });
 
 const {
-  D1_DATA_SOURCE_ID: D1,
-  TWILIO_ACCOUNT_SID: TWILIO_ACCOUNT_SID,
-} = requireEnv(
-  "D1_DATA_SOURCE_ID",
-  "TWILIO_ACCOUNT_SID",
-);
-
-function twilioAuthentication(environment = process.env) {
-  const apiKeySid = String(environment.TWILIO_API_KEY_SID || "").trim();
-  const apiKeySecret = String(environment.TWILIO_API_KEY_SECRET || "").trim();
-  const authToken = String(environment.TWILIO_AUTH_TOKEN || "").trim();
-
-  if (apiKeySid || apiKeySecret) {
-    if (!apiKeySid || !apiKeySecret) {
-      throw new Error("Set both TWILIO_API_KEY_SID and TWILIO_API_KEY_SECRET, or neither.");
-    }
-    return { type: "api-key", username: apiKeySid, password: apiKeySecret };
-  }
-  if (authToken) return { type: "auth-token", username: TWILIO_ACCOUNT_SID, password: authToken };
-
-  throw new Error(
-    "Missing Twilio authentication: set TWILIO_API_KEY_SID and TWILIO_API_KEY_SECRET (recommended), or TWILIO_AUTH_TOKEN.",
-  );
-}
-
-const TWILIO_AUTHENTICATION = twilioAuthentication();
-
-function twilioSenderConfiguration(environment = process.env) {
-  const messagingServiceSid = String(environment.TWILIO_MESSAGING_SERVICE_SID || "").trim();
-  const fromNumber = String(environment.TWILIO_FROM_NUMBER || "").trim();
-
-  if (messagingServiceSid) {
-    if (!/^MG[0-9a-f]{32}$/i.test(messagingServiceSid)) {
-      throw new Error("TWILIO_MESSAGING_SERVICE_SID must be a Twilio Messaging Service SID beginning with MG.");
-    }
-    return { type: "messaging-service", messagingServiceSid };
-  }
-  if (fromNumber) return { type: "from-number", fromNumber };
-
-  throw new Error(
-    "Missing Twilio sender configuration: set TWILIO_MESSAGING_SERVICE_SID (recommended) or TWILIO_FROM_NUMBER.",
-  );
-}
-
-const TWILIO_SENDER = twilioSenderConfiguration();
-
-class TwilioRequestError extends Error {
-  constructor(message, certainty) {
-    super(message);
-    this.name = "TwilioRequestError";
-    this.certainty = certainty;
-  }
-}
+  TwilioRequestError,
+  createTwilioClient,
+  twilioAuthentication,
+  twilioMessageParameters,
+  twilioSenderConfiguration,
+} = require("./twilio-sms");
 
 function berlinDateParts(now = new Date()) {
   const formatter = new Intl.DateTimeFormat("en", {
@@ -358,77 +311,7 @@ function reminderTrackingProperties(
   };
 }
 
-function twilioErrorText(payload, fallback) {
-  // Twilio error messages can echo a recipient number. Persist only its code
-  // and HTTP outcome, keeping D1 and the Actions log free of phone numbers.
-  const code = payload?.code ? ` (code ${payload.code})` : "";
-  const outcome = String(fallback || "rejected the SMS request").replace(/\s+/g, " ").trim();
-  return `Twilio SMS request failed${code}: ${outcome}`.slice(0, 1900);
-}
-
-function twilioMessageParameters({ to, body }, sender = TWILIO_SENDER) {
-  const parameters = { To: to, Body: body };
-  if (sender.type === "messaging-service") {
-    parameters.MessagingServiceSid = sender.messagingServiceSid;
-  } else {
-    parameters.From = sender.fromNumber;
-  }
-  return parameters;
-}
-
-async function sendTwilioSms({ to, body }) {
-  const payload = new URLSearchParams(twilioMessageParameters({ to, body }));
-  const authorization = Buffer.from(
-    `${TWILIO_AUTHENTICATION.username}:${TWILIO_AUTHENTICATION.password}`,
-  ).toString("base64");
-
-  let response;
-  try {
-    response = await fetch(
-      `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(TWILIO_ACCOUNT_SID)}/Messages.json`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Basic ${authorization}`,
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body: payload,
-      },
-    );
-  } catch (failure) {
-    // A dropped connection may have happened after Twilio accepted the body.
-    throw new TwilioRequestError(
-      "Twilio request outcome is unknown because the network request did not complete",
-      "uncertain",
-    );
-  }
-
-  const rawBody = await response.text();
-  let responseBody;
-  try {
-    responseBody = rawBody ? JSON.parse(rawBody) : {};
-  } catch {
-    responseBody = {};
-  }
-
-  if (!response.ok) {
-    // Twilio has conclusively rejected a 4xx request. A 5xx response could be
-    // ambiguous, so leave an at-most-once reservation in place for review.
-    throw new TwilioRequestError(
-      twilioErrorText(responseBody, `HTTP ${response.status}`),
-      response.status >= 400 && response.status < 500 ? "failed" : "uncertain",
-    );
-  }
-  if (!responseBody?.sid) {
-    throw new TwilioRequestError(
-      "Twilio accepted the request but did not return a Message SID; outcome is unknown",
-      "uncertain",
-    );
-  }
-  return responseBody;
-}
-
-async function ensureD1ReminderSchema() {
+async function ensureD1ReminderSchema(D1) {
   let d1 = await getDataSource(D1);
   assertPropertyTypes(d1, D1_BASE_SCHEMA);
 
@@ -500,7 +383,7 @@ async function markFailedWithoutSend(worker, targetMonth, message) {
   );
 }
 
-async function processWorker(worker, run) {
+async function processWorker(worker, run, twilio) {
   const reminderDecision = existingReminderDecision(worker, run.reminderKey);
   if (reminderDecision.action === "block") {
     throw new Error(`${worker.name}: ${reminderDecision.reason}.`);
@@ -559,7 +442,7 @@ async function processWorker(worker, run) {
   );
 
   try {
-    const message = await sendTwilioSms({
+    const message = await twilio.sendSms({
       to: phone,
       body: reminderBody(run.targetMonth, incompleteDates.length, frontendUrl),
     });
@@ -620,7 +503,10 @@ async function main() {
       `SMS reminders begin on ${run.thirdFriday}; today is ${run.currentDate} in Europe/Berlin.`,
     );
   }
-  await ensureD1ReminderSchema();
+  const { D1_DATA_SOURCE_ID: D1 } = requireEnv("D1_DATA_SOURCE_ID");
+  const twilio = createTwilioClient();
+  twilioSenderConfiguration();
+  await ensureD1ReminderSchema(D1);
   const rows = await queryAll(D1, {
     property: "Onboarding Status",
     select: { equals: "Ready" },
@@ -636,7 +522,7 @@ async function main() {
   const failures = [];
   for (const worker of workers) {
     try {
-      await processWorker(worker, run);
+      await processWorker(worker, run, twilio);
     } catch (failure) {
       const message = errorMessage(failure);
       console.error(message);
