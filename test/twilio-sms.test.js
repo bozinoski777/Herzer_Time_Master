@@ -203,8 +203,11 @@ test("authentication trims pasted whitespace and uses the supplied account, not 
 test("the credential-check command works without Notion, a sender, or a reminder date", () => {
   const script = `
     globalThis.fetch = async (url, options) => {
-      if (options.method !== "GET" || !url.endsWith("/Messages.json?PageSize=1")) throw new Error("Unexpected side effect");
-      return { ok: true, status: 200, text: async () => '{"messages":[]}' };
+      if (options.method !== "GET") throw new Error("Unexpected side effect");
+      const payload = url.endsWith("/Messages.json?PageSize=1")
+        ? { messages: [] }
+        : { sid: process.env.TWILIO_ACCOUNT_SID, status: "active" };
+      return { ok: true, status: 200, text: async () => JSON.stringify(payload) };
     };
     process.argv[1] = require.resolve("./scripts/twilio-sms.js");
     require("node:module").runMain();
@@ -217,4 +220,86 @@ test("the credential-check command works without Notion, a sender, or a reminder
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /credential check passed/);
   assert.match(result.stdout, /no SMS sent/);
+});
+
+const activeAccount = { sid: environment.TWILIO_ACCOUNT_SID, status: "active", auth_token: "private-account-token" };
+const matchingService = { sid: environment.TWILIO_MESSAGING_SERVICE_SID, account_sid: environment.TWILIO_ACCOUNT_SID };
+
+test("configuration check verifies account and service ownership with reads only", async () => {
+  const { client, calls, logs } = setup([
+    response(200, { messages: [] }), response(200, activeAccount), response(200, matchingService),
+  ], { TWILIO_AUTH_MODE: "auth-token" });
+  await client.checkConfiguration();
+  assert.equal(calls.length, 3);
+  assert.equal(calls[1].url, `https://api.twilio.com/2010-04-01/Accounts/${environment.TWILIO_ACCOUNT_SID}.json`);
+  assert.equal(calls[2].url, `https://messaging.twilio.com/v1/Services/${environment.TWILIO_MESSAGING_SERVICE_SID}`);
+  for (const call of calls) {
+    assert.equal(call.method, "GET");
+    assert.equal(call.body, undefined);
+    assert.equal(credentials(call), `${environment.TWILIO_ACCOUNT_SID}:account-auth-token`);
+  }
+  assert.match(logs.join("\n"), /account status: active/);
+  assert.match(logs.join("\n"), /belongs to the configured account/);
+  for (const secret of [...Object.values(environment), activeAccount.auth_token]) {
+    assert.equal(logs.join("\n").includes(secret), false);
+  }
+});
+
+test("a service belonging to another account fails the check without exposing either account", async () => {
+  const otherAccount = `AC${"9".repeat(32)}`;
+  const { client, calls } = setup([
+    response(200, { messages: [] }), response(200, activeAccount),
+    response(200, { ...matchingService, account_sid: otherAccount }),
+  ], { TWILIO_AUTH_MODE: "auth-token" });
+  await assert.rejects(client.checkConfiguration(), (error) => {
+    assert.equal(error.certainty, "failed");
+    assert.match(error.message, /belongs to a different account/);
+    assert.equal(error.message.includes(otherAccount), false);
+    assert.equal(error.message.includes(environment.TWILIO_ACCOUNT_SID), false);
+    return true;
+  });
+  assert.ok(calls.every((call) => call.method === "GET"));
+});
+
+for (const status of ["suspended", "closed"]) {
+  test(`configuration check identifies an account that is ${status}`, async () => {
+    const { client, calls } = setup([
+      response(200, { messages: [] }), response(200, { ...activeAccount, status }),
+    ], { TWILIO_AUTH_MODE: "auth-token" });
+    await assert.rejects(client.checkConfiguration(), new RegExp(`account status is ${status}`));
+    assert.equal(calls.length, 2);
+    assert.ok(calls.every((call) => call.method === "GET"));
+  });
+}
+
+for (const status of [401, 403, 404]) {
+  test(`service HTTP ${status} after a successful credential check does not switch credentials`, async () => {
+    const { client, calls } = setup([
+      response(200, { messages: [] }), response(status, { code: status === 404 ? 20404 : 20003 }),
+    ]);
+    await assert.rejects(client.checkConfiguration(), /Messages authentication passed, but the configured Messaging Service is inaccessible/);
+    assert.equal(calls.length, 2);
+    assert.equal(credentials(calls[0]), credentials(calls[1]));
+    assert.ok(calls.every((call) => call.method === "GET"));
+  });
+}
+
+test("API-key configuration checks skip Accounts and keep service requests in IE1", async () => {
+  const { client, calls, logs } = setup([
+    response(200, { messages: [] }), response(200, matchingService),
+  ], { TWILIO_REGION: "ie1" });
+  await client.checkConfiguration();
+  assert.equal(calls.length, 2);
+  assert.equal(new URL(calls[1].url).hostname, "messaging.dublin.ie1.twilio.com");
+  assert.match(logs.join("\n"), /Account status check skipped/);
+});
+
+test("auth-token send denial points to account and sender checks instead of selecting auth-token again", async () => {
+  const { client, calls } = setup([response(401, { code: 20003 })], { TWILIO_AUTH_MODE: "auth-token" });
+  await assert.rejects(client.sendSms(message), (error) => {
+    assert.match(error.message, /account status and Messaging Service ownership/);
+    assert.doesNotMatch(error.message, /Select auth-token|TWILIO_API_KEY_SECRET/);
+    return true;
+  });
+  assert.equal(calls.length, 1);
 });

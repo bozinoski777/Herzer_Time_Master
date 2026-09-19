@@ -13,7 +13,7 @@ on:
         required: false
         type: string
       check_credentials_only:
-        description: "Check Twilio credentials without sending SMS or changing Notion."
+        description: "Check Twilio credentials, account status, and Messaging Service ownership; no SMS sent."
         required: false
         type: boolean
         default: false
@@ -90,7 +90,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Check Twilio credentials without sending SMS
+      - name: Check Twilio credentials, account, and Messaging Service without sending SMS
         if: github.event_name == 'workflow_dispatch' && inputs.check_credentials_only
         run: node scripts/twilio-sms.js
       - name: Send one idempotent reminder per incomplete worker

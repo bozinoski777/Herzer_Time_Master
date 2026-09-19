@@ -87,7 +87,11 @@ function createTwilioClient(environment = process.env, { fetchImpl = globalThis.
   const url = `https://${host}/2010-04-01/Accounts/${sid}/Messages.json`;
   let authenticationIndex = 0;
 
-  async function request(method, body) {
+  async function request(method, body, {
+    requestUrl = method === "GET" ? `${url}?PageSize=1` : url,
+    operation = method === "GET" ? "credential check" : "SMS request",
+    allowFallback = true,
+  } = {}) {
     const attempted = [];
     while (authenticationIndex < authentications.length) {
       const authentication = authentications[authenticationIndex];
@@ -96,7 +100,7 @@ function createTwilioClient(environment = process.env, { fetchImpl = globalThis.
       let response;
       let rawBody;
       try {
-        response = await fetchImpl(method === "GET" ? `${url}?PageSize=1` : url, {
+        response = await fetchImpl(requestUrl, {
           method,
           headers: {
             Authorization: `Basic ${authorization}`,
@@ -122,18 +126,28 @@ function createTwilioClient(environment = process.env, { fetchImpl = globalThis.
       if (!response.ok) {
         // Fall back only when Twilio explicitly rejected authentication. There
         // is no Message to duplicate after this particular 401 / 20003 result.
-        if (response.status === 401 && Number(payload?.code) === 20003 && authenticationIndex + 1 < authentications.length) {
+        if (allowFallback && response.status === 401 && Number(payload?.code) === 20003 && authenticationIndex + 1 < authentications.length) {
           log("Twilio rejected api-key authentication (HTTP 401 / code 20003); trying the configured Auth Token once.");
           authenticationIndex += 1;
           continue;
         }
         // Never include Twilio's raw message: it may echo numbers or secrets.
         const code = /^\d{1,6}$/.test(String(payload?.code)) ? ` (code ${payload.code})` : "";
-        let message = `Twilio ${method === "GET" ? "credential check" : "SMS request"} failed${code}: HTTP ${response.status}; authentication=${attempted.join(" then ")}; region=${region}.`;
-        if (response.status === 401 || Number(payload?.code) === 20003) {
-          message += " Check that TWILIO_ACCOUNT_SID and the selected live credentials belong to the same account/subaccount and region. TWILIO_API_KEY_SECRET must be the key's own secret, not the account Auth Token. Select auth-token to bypass the API key.";
+        let message = `Twilio ${operation} failed${code}: HTTP ${response.status}; authentication=${attempted.join(" then ")}; region=${region}.`;
+        if (operation === "Messaging Service check" && [401, 403, 404].includes(response.status)) {
+          message += " Messages authentication passed, but the configured Messaging Service is inaccessible. Check TWILIO_MESSAGING_SERVICE_SID in the same account and region; a restricted key also needs Services read permission. Do not replace working credentials solely because of this result.";
+        } else if (response.status === 401 || Number(payload?.code) === 20003) {
+          message += " Check that TWILIO_ACCOUNT_SID and the selected live credentials belong to the same account/subaccount and region.";
+          if (authentication.type === "api-key") {
+            message += " TWILIO_API_KEY_SECRET must be the key's own secret, not the account Auth Token. Select auth-token to bypass the API key.";
+          }
+          if (method === "POST") {
+            message += " If the credential check passes, sending is still being denied: run check_credentials_only to inspect account status and Messaging Service ownership, then check Twilio's Debugger for sending restrictions.";
+          }
         } else if (response.status === 403 && method === "GET") {
-          message += " The credential check needs Messages read permission; a send-only restricted key may still send SMS.";
+          message += operation === "credential check"
+            ? " The credential check needs Messages read permission; a send-only restricted key may still send SMS."
+            : " This check requires read permission for the requested resource.";
         }
         throw new TwilioRequestError(message, response.status >= 400 && response.status < 500 ? "failed" : "uncertain");
       }
@@ -152,6 +166,48 @@ function createTwilioClient(environment = process.env, { fetchImpl = globalThis.
       log(`Twilio credential check passed: authentication=${authentication}; region=${region}. Messages read access confirmed; no SMS sent. This does not verify sender setup or delivery.`);
       return { authentication, region };
     },
+    async checkConfiguration() {
+      const result = await this.checkCredentials();
+      // Account metadata is unavailable to Standard API keys. Only use the
+      // already selected Auth Token; never widen access for a diagnostic read.
+      if (result.authentication === "auth-token") {
+        const account = await request("GET", undefined, {
+          requestUrl: `https://${host}/2010-04-01/Accounts/${sid}.json`,
+          operation: "account status check",
+          allowFallback: false,
+        });
+        if (account?.sid !== sid || !["active", "suspended", "closed"].includes(account?.status)) {
+          throw new TwilioRequestError("Twilio account status check returned an unexpected response; no SMS sent.", "uncertain");
+        }
+        if (account.status !== "active") {
+          throw new TwilioRequestError(`Twilio account status is ${account.status}. Resolve the account restriction with Twilio before sending; no SMS sent.`, "failed");
+        }
+        log("Twilio account status: active. This does not rule out product-specific sending restrictions.");
+      } else {
+        log("Account status check skipped for API-key authentication; Standard keys cannot read Accounts.");
+      }
+
+      if (value(environment, "TWILIO_MESSAGING_SERVICE_SID")) {
+        const sender = twilioSenderConfiguration(environment);
+        const messagingHost = region === "ie1" ? "messaging.dublin.ie1.twilio.com" : "messaging.twilio.com";
+        const service = await request("GET", undefined, {
+          requestUrl: `https://${messagingHost}/v1/Services/${sender.messagingServiceSid}`,
+          operation: "Messaging Service check",
+          allowFallback: false,
+        });
+        if (service?.sid !== sender.messagingServiceSid || !/^AC[0-9a-f]{32}$/i.test(service?.account_sid || "")) {
+          throw new TwilioRequestError("Twilio Messaging Service check returned an unexpected response; no SMS sent.", "uncertain");
+        }
+        if (service.account_sid !== sid) {
+          throw new TwilioRequestError("TWILIO_MESSAGING_SERVICE_SID belongs to a different account than TWILIO_ACCOUNT_SID. Use a Messaging Service owned by the configured account; no SMS sent.", "failed");
+        }
+        log("Messaging Service is accessible and belongs to the configured account.");
+      } else {
+        log("Messaging Service ownership check skipped: no TWILIO_MESSAGING_SERVICE_SID configured.");
+      }
+      log("Twilio configuration checks passed; no SMS sent. Sender-pool readiness, send permission, and delivery remain unverified.");
+      return result;
+    },
     async sendSms(message) {
       const sender = twilioSenderConfiguration(environment);
       const payload = await request("POST", new URLSearchParams(twilioMessageParameters(message, sender)));
@@ -164,7 +220,7 @@ function createTwilioClient(environment = process.env, { fetchImpl = globalThis.
 }
 
 if (require.main === module) {
-  Promise.resolve().then(() => createTwilioClient().checkCredentials()).catch((failure) => {
+  Promise.resolve().then(() => createTwilioClient().checkConfiguration()).catch((failure) => {
     console.error(failure.message);
     process.exitCode = 1;
   });
