@@ -147,12 +147,13 @@ Configure the Notion integration with **read content**, **update content**, and 
 
 `SMS reminders for incomplete time entries` runs at **08:17 in Europe/Berlin twice per month**: on the third Friday, and again exactly five calendar days before the final day of the month. It can also be started through **Actions → Run workflow** on or after the third Friday. It checks the current Berlin calendar month in each worker's existing D3 `Aktueller Monat` table; it does not wait for or use Month Rollover/D4.
 
-Each check requires the **entire current month** to be complete: every Monday–Friday date from the first through the final calendar day must have a D3 row with both `Stunden` and `Standort`, including dates later in the month. It ignores days before the existing D1 `Onboarded At` date. A required date is incomplete when it has no D3 row, or when any D3 row for that date lacks either `Stunden` or `Standort`; this also catches an unfinished additional `Teil-Tag` row. It considers only D1 rows with `Active = true` and `Onboarding Status = Ready`, and refuses to use a worker whose D1 `Current Month` does not match the current Berlin month.
+Each check requires the **entire current month** to be complete: every Monday–Friday date from the first through the final calendar day must have a D3 row with both `Stunden` and `Standort`, including dates later in the month. It ignores days before the existing D1 `Onboarded At` date. A required date is incomplete when it has no D3 row, or when any D3 row for that date lacks either `Stunden` or `Standort`; this also catches an unfinished additional `Teil-Tag` row. It considers only D1 rows with **both `Active = true` and `SMS Notification = true`**, plus `Onboarding Status = Ready`, and refuses to use a worker whose D1 `Current Month` does not match the current Berlin month.
 
 The action creates these D1 properties on its first successful schema check; do not create a second copy with a different name:
 
 | D1 property | Type and use |
 | --- | --- |
+| `SMS Notification` | **Checkbox**. Must be checked together with `Active` before a worker can receive reminders. Unchecked or missing means disabled, including manual targeted runs. The workflow never checks this box for a worker. |
 | `SMS Telefonnummer` | **Phone**. Management must enter every recipient in E.164 form, for example `+491701234567`. It stays in private D1 and is never copied to the worker front-end. |
 | `SMS Reminder Month` | **Text**. The protected reminder cycle, for example `2026-09:third-friday` or `2026-09:five-days-before-month-end`. |
 | `SMS Reminder Status` | **Select**: `Sending`, `Accepted`, `Failed`, or `Uncertain`. `Accepted` means Twilio accepted the Message request; it is not a delivery receipt. |
@@ -164,7 +165,7 @@ Duplicate protection is deliberately conservative and applies independently to e
 
 The workflow uses the configured **US1 account Auth Token and Messaging Service**. Keep the three Twilio secrets above in GitHub Actions. The account's Primary Customer Profile in Trust Hub must be approved, and the Messaging Service must have an approved sender in its Sender Pool. Twilio selects the sender through `MessagingServiceSid`. Workers must have agreed to receive these messages, and the text includes a non-SMS route to opt out through management.
 
-For a manual run, open **Actions → SMS reminders for incomplete time entries → Run workflow**. The optional `target_worker` accepts an exact D1 `Worker Key` (preferred) or exact `Vor- und Nachname`; only that active, ready worker can be selected. Leave it blank to check all eligible workers. The existing reminder status still prevents duplicate sends.
+For a manual run, open **Actions → SMS reminders for incomplete time entries → Run workflow**. The optional `target_worker` accepts an exact D1 `Worker Key` (preferred) or exact `Vor- und Nachname`; only that active, ready worker with `SMS Notification` checked can be selected. Leave it blank to check all eligible workers. Uncheck `SMS Notification` to disable reminders for a worker without changing their employment status. Missing or unchecked consent is never bypassed by a manual target. The existing reminder status still prevents duplicate sends.
 
 Failures include the HTTP status, Twilio error code when available, and a redacted reason. Phone numbers, SMS text, credentials, and raw Twilio responses are not printed. A timeout or uncertain response is never retried automatically.
 

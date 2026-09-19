@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Send one monthly SMS reminder to each active, Ready worker whose current
+ * Send one SMS reminder per cycle to each active, Ready, opted-in worker whose current
  * D3 month still has an unfinished weekday. It runs once at the end of the
  * third week and again five calendar days before month end, while the D3
  * month remains worker-visible ahead of Month Rollover.
@@ -36,6 +36,7 @@ const {
 
 const BERLIN_TIME_ZONE = "Europe/Berlin";
 const PHONE_PROPERTY = "SMS Telefonnummer";
+const SMS_NOTIFICATION_PROPERTY = "SMS Notification";
 const REMINDER_MONTH_PROPERTY = "SMS Reminder Month";
 const REMINDER_STATUS_PROPERTY = "SMS Reminder Status";
 const REMINDER_SENT_AT_PROPERTY = "SMS Reminder Sent At";
@@ -67,6 +68,7 @@ const D1_BASE_SCHEMA = Object.freeze({
 });
 
 const D1_REMINDER_SCHEMA = Object.freeze({
+  [SMS_NOTIFICATION_PROPERTY]: "checkbox",
   [PHONE_PROPERTY]: "phone_number",
   [REMINDER_MONTH_PROPERTY]: "rich_text",
   [REMINDER_STATUS_PROPERTY]: "select",
@@ -253,7 +255,8 @@ function reminderBody(targetMonth, incompleteDayCount, frontendUrl) {
 function workerFromRow(row) {
   return {
     ...workerReferencesFromD1(row),
-    active: Boolean(row.properties.Active?.checkbox),
+    active: row.properties.Active?.checkbox === true,
+    smsNotification: row.properties[SMS_NOTIFICATION_PROPERTY]?.checkbox === true,
     onboardingStatus: row.properties["Onboarding Status"]?.select?.name || "",
     onboardedAt: row.properties["Onboarded At"]?.date?.start || "",
     frontendUrl: row.properties["Frontend URL"]?.url || "",
@@ -474,7 +477,7 @@ async function processWorker(worker, run, twilio) {
 }
 
 function selectWorkers(workers, targetWorker) {
-  if (!targetWorker) return workers.filter((worker) => worker.active);
+  if (!targetWorker) return workers.filter((worker) => worker.active === true && worker.smsNotification === true);
 
   const matches = workers.filter(
     (worker) => worker.workerKey === targetWorker || worker.name === targetWorker,
@@ -487,8 +490,11 @@ function selectWorkers(workers, targetWorker) {
       `SMS_REMINDER_TARGET_WORKER "${targetWorker}" matches multiple Ready workers; use the exact Worker Key.`,
     );
   }
-  if (!matches[0].active) {
+  if (matches[0].active !== true) {
     throw new Error(`${matches[0].name} is inactive and cannot receive an SMS reminder.`);
+  }
+  if (matches[0].smsNotification !== true) {
+    throw new Error(`${matches[0].name}: ${SMS_NOTIFICATION_PROPERTY} is unchecked; SMS reminders are disabled.`);
   }
   return matches;
 }
@@ -511,7 +517,7 @@ async function main() {
   assertUniqueWorkerReferences(readyWorkers, { roles: ["d3"] });
   const workers = selectWorkers(readyWorkers, run.targetWorker);
   console.log(
-    `Checking every ${run.targetMonth} weekday for ${workers.length} active Ready worker(s) ` +
+    `Checking every ${run.targetMonth} weekday for ${workers.length} active Ready worker(s) with SMS Notification enabled ` +
       `(${run.reminderKey}${run.targetWorker ? `; target ${run.targetWorker}` : ""}).`,
   );
 
@@ -561,4 +567,5 @@ module.exports = {
   selectWorkers,
   thirdFriday,
   validHttpsUrl,
+  workerFromRow,
 };

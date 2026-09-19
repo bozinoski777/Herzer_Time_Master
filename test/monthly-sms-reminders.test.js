@@ -14,6 +14,7 @@ const {
   selectWorkers,
   thirdFriday,
   validHttpsUrl,
+  workerFromRow,
 } = require("../scripts/monthly-sms-reminders");
 
 function currentMonthRow(isoDate, { hours = 8, standort = "Augsburg" } = {}) {
@@ -47,15 +48,49 @@ test("the two reminder cycles are the third Friday and five calendar days before
 
 test("manual dispatch can target one exact active worker without weakening scheduled scope", () => {
   const workers = [
-    { name: "Alex Example", workerKey: "wrk_alex", active: true },
-    { name: "Bea Example", workerKey: "wrk_bea", active: false },
+    { name: "Alex Example", workerKey: "wrk_alex", active: true, smsNotification: true },
+    { name: "Bea Example", workerKey: "wrk_bea", active: false, smsNotification: true },
+    { name: "Chris Example", workerKey: "wrk_chris", active: true, smsNotification: false },
   ];
   assert.deepEqual(selectWorkers(workers, "wrk_alex"), [workers[0]]);
   assert.throws(() => selectWorkers(workers, "wrk_bea"), /inactive/);
+  assert.throws(() => selectWorkers(workers, "wrk_chris"), /SMS Notification is unchecked/);
+  assert.throws(() => selectWorkers(workers, "Chris Example"), /SMS Notification is unchecked/);
   assert.throws(() => selectWorkers(workers, "missing"), /No Ready worker matches/);
   assert.throws(
     () => currentReminderRun({ SMS_REMINDER_TARGET_WORKER: "wrk_alex" }),
     /allowed only for workflow_dispatch/,
+  );
+});
+
+test("scheduled reminders require both D1 checkboxes, with missing or malformed values disabled", () => {
+  const cases = [
+    [true, true, true],
+    [true, false, false],
+    [false, true, false],
+    [false, false, false],
+    [true, undefined, false],
+    [undefined, true, false],
+    [true, "true", false],
+    ["true", true, false],
+  ];
+  for (const [active, smsNotification, eligible] of cases) {
+    const worker = workerFromRow({
+      id: "test-worker",
+      properties: {
+        ...(active === undefined ? {} : { Active: { checkbox: active } }),
+        ...(smsNotification === undefined ? {} : { "SMS Notification": { checkbox: smsNotification } }),
+        "Onboarding Status": { select: { name: "Ready" } },
+      },
+    });
+    assert.deepEqual(selectWorkers([worker], ""), eligible ? [worker] : []);
+  }
+});
+
+test("a manual target cannot bypass missing SMS opt-in", () => {
+  assert.throws(
+    () => selectWorkers([{ name: "Alex Example", workerKey: "wrk_alex", active: true }], "wrk_alex"),
+    /SMS Notification is unchecked/,
   );
 });
 
