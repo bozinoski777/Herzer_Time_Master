@@ -114,7 +114,13 @@ test("invalid/missing dates and wrong exact worker are rejected", () => {
   assert.throws(
     () => selectedEntries([oldRow(IDS.sourceA, "2026-08-31", "Ada B. Lovelace")],
       "Ada Lovelace", "wrk_ada"),
-    /outside exact worker/,
+    (error) => {
+      assert.match(error.message, /outside exact worker "Ada Lovelace"/);
+      assert.match(error.message, /read as "Ada B\. Lovelace"/);
+      assert.ok(error.message.includes(`https://www.notion.so/${IDS.sourceA.replaceAll("-", "")}`));
+      assert.match(error.message, /Import stopped before copying/);
+      return true;
+    },
   );
 });
 

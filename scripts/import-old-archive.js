@@ -120,8 +120,19 @@ function dateOnly(value, pageId) {
 }
 
 function sourceEntry(row, exactName, workerKey) {
-  if (!row?.id || richTextValue(row.properties?.["Vor- und Nachname"]).trim() !== exactName) {
-    throw new Error(`Old archive returned a row outside exact worker "${exactName}"`);
+  if (!row?.id) {
+    throw new Error(`Old archive returned a row without a page ID for worker ${JSON.stringify(exactName)}`);
+  }
+  const nameProperty = row.properties?.["Vor- und Nachname"];
+  const actualName = richTextValue(nameProperty).trim();
+  if (actualName !== exactName) {
+    const pageUrl = `https://www.notion.so/${normalizeNotionId(row.id)}`;
+    throw new Error(
+      `Old archive page ${row.id} (${pageUrl}) is outside exact worker ${JSON.stringify(exactName)}: ` +
+      `"Vor- und Nachname" read as ${JSON.stringify(actualName)} ` +
+      `(property type: ${nameProperty?.type || "missing/unspecified"}; ` +
+      `rich-text parts: ${nameProperty?.rich_text?.length ?? 0}). Import stopped before copying.`,
+    );
   }
   const sourceDate = row.properties?.Date?.date;
   const datum = dateOnly(sourceDate?.start, row.id);
