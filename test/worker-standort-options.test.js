@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 
 const {
   WORK_TYPE_OPTIONS,
+  preserveLegacyStandortOptions,
   workerStandortNames,
   workerStandortOptions,
 } = require("../scripts/worker-standort-options");
@@ -24,9 +25,8 @@ const {
 } = require("../scripts/onboard-workers");
 
 test("Standort combines active sites and the former day-type choices once", () => {
-  assert.deepEqual(workerStandortNames(["Berlin", "Urlaub", "Berlin"]), [
+  assert.deepEqual(workerStandortNames(["Berlin", "Urlaub", "Berlin", "Teil-Tag"]), [
     "Berlin",
-    "Teil-Tag",
     "Urlaub",
     "Sonderurlaub",
     "Überstundenausgleich",
@@ -36,9 +36,17 @@ test("Standort combines active sites and the former day-type choices once", () =
 
   const options = workerStandortOptions(["Berlin"]);
   assert.deepEqual(options.find((option) => option.name === "Berlin"), { name: "Berlin", color: "blue" });
-  assert.deepEqual(options.find((option) => option.name === "Teil-Tag"), { name: "Teil-Tag", color: "gray" });
+  assert.equal(options.some((option) => option.name === "Teil-Tag"), false);
   assert.ok(WORK_TYPE_OPTIONS.every((option) => option.color === "gray"));
   assert.equal(options.length, WORK_TYPE_OPTIONS.length + 1);
+});
+
+test("D3 option rebuilds preserve legacy Teil-Tag only when already present", () => {
+  const desired = workerStandortOptions(["Berlin"]);
+  assert.deepEqual(preserveLegacyStandortOptions(desired, []), desired);
+  const legacy = { id: "teil-tag", name: "Teil-Tag", color: "gray" };
+  assert.deepEqual(preserveLegacyStandortOptions(desired, [legacy]), [...desired, legacy]);
+  assert.deepEqual(preserveLegacyStandortOptions(desired, [{ name: "Old office" }]), desired);
 });
 
 test("onboarding workflow modes keep preflight separate from provisioning", () => {

@@ -23,7 +23,7 @@ const {
   ensureCurrentMonthPresentation,
 } = require("./frontend-presentation");
 const { ensureArchivePresentation } = require("./archive-presentation");
-const { WORK_TYPE_OPTIONS } = require("./worker-standort-options");
+const { WORK_TYPE_OPTIONS, LEGACY_WORK_TYPE_OPTIONS } = require("./worker-standort-options");
 const {
   planSelectOptionUpdate,
   updateDataSourceSelect,
@@ -59,6 +59,7 @@ function unique(values) {
 function mergeStandortOptions(standortOptions, legacyOptions, legacyValues) {
   const candidates = [
     ...WORK_TYPE_OPTIONS,
+    ...LEGACY_WORK_TYPE_OPTIONS,
     ...legacyOptions,
     ...unique(legacyValues).map((name) => ({ name, color: "blue" })),
   ];

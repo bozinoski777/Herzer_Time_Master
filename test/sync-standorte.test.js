@@ -79,7 +79,6 @@ test("D3 Standort sync gives newly-created work choices their gray color", () =>
   assert.deepEqual(
     plan.nextOptions.map((option) => ({ name: option.name, color: option.color })),
     [
-      { name: "Teil-Tag", color: "gray" },
       { name: "Urlaub", color: "gray" },
       { name: "Sonderurlaub", color: "gray" },
       { name: "Überstundenausgleich", color: "gray" },
@@ -87,6 +86,23 @@ test("D3 Standort sync gives newly-created work choices their gray color", () =>
       { name: "Krank", color: "gray" },
     ],
   );
+});
+
+test("D3 sync preserves existing Teil-Tag selections without adding the choice to new workers", () => {
+  const desired = workerStandortOptions([]);
+  const plan = planD3StandortOptions(
+    [{ id: "teil-tag", name: "Teil-Tag", color: "gray" }],
+    desired,
+    [{ properties: { Standort: { select: { name: "Teil-Tag" } } } }],
+  );
+  assert.deepEqual(plan.removed, []);
+  assert.deepEqual(plan.nextOptions.find((option) => option.name === "Teil-Tag"), {
+    id: "teil-tag", name: "Teil-Tag",
+  });
+  assert.equal(planD3StandortOptions([], desired, []).nextOptions.some((option) => option.name === "Teil-Tag"), false);
+  assert.deepEqual(planD7StandortRelations([
+    { id: "legacy-row", properties: { Standort: { select: { name: "Teil-Tag" } }, "Standort (D8)": { relation: [] } } },
+  ], []), []);
 });
 
 test("D7 history also adds missing work choices in gray", () => {

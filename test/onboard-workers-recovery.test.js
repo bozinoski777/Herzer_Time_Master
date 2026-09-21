@@ -131,7 +131,6 @@ test("partial onboarding recovery adds work choices in gray without recoloring e
   assert.deepEqual(
     plan.additions.map((option) => ({ name: option.name, color: option.color })),
     [
-      { name: "Teil-Tag", color: "gray" },
       { name: "Urlaub", color: "gray" },
       { name: "Sonderurlaub", color: "gray" },
       { name: "Überstundenausgleich", color: "gray" },

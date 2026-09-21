@@ -42,7 +42,11 @@ const {
   D8_DATA_SOURCE_ID: D8,
 } = requireEnv("D1_DATA_SOURCE_ID", "D7_DATA_SOURCE_ID", "D8_DATA_SOURCE_ID");
 
-const { workerStandortOptions } = require("./worker-standort-options");
+const {
+  LEGACY_WORK_TYPE_OPTIONS,
+  preserveLegacyStandortOptions,
+  workerStandortOptions,
+} = require("./worker-standort-options");
 const {
   planSelectOptionUpdate,
   reconcileSelectOptions,
@@ -349,7 +353,7 @@ async function activeStandorte() {
 function historyStandortAdditions(existingOptions, names) {
   const requestedNames = uniqueNames(names);
   const desiredByName = new Map(
-    workerStandortOptions(requestedNames).map((option) => [option.name, option]),
+    [...workerStandortOptions(requestedNames), ...LEGACY_WORK_TYPE_OPTIONS].map((option) => [option.name, option]),
   );
   const desired = requestedNames.map(
     (name) => desiredByName.get(name) || { name, color: "blue" },
@@ -378,9 +382,12 @@ async function addSelectOptions(dataSourceId, dataSource, propertyName, names) {
  * function.
  */
 async function rebuildD3StandortOptions(dataSourceId, activeNames, currentRows) {
-  const desiredOptions = workerStandortOptions(activeNames);
   const selectedNames = selectNamesFromRows(currentRows, "Standort");
   const dataSource = await getDataSource(dataSourceId);
+  const desiredOptions = preserveLegacyStandortOptions(
+    workerStandortOptions(activeNames),
+    dataSource.properties?.Standort?.select?.options || [],
+  );
   try {
     planSelectOptionUpdate(
       dataSource.properties?.Standort?.select?.options || [],

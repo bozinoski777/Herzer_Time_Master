@@ -7,7 +7,6 @@
  * share a date when the worker splits hours between locations.
  */
 const WORK_TYPE_OPTIONS = [
-  { name: "Teil-Tag", color: "gray" },
   { name: "Urlaub", color: "gray" },
   { name: "Sonderurlaub", color: "gray" },
   { name: "Überstundenausgleich", color: "gray" },
@@ -15,13 +14,17 @@ const WORK_TYPE_OPTIONS = [
   { name: "Krank", color: "gray" },
 ];
 
+// Retain old selections, but never provision these choices for new workers.
+const LEGACY_WORK_TYPE_OPTIONS = [{ name: "Teil-Tag", color: "gray" }];
+
 function uniqueNames(values) {
   return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
 }
 
 function workerStandortNames(standorte) {
   const workTypeNames = WORK_TYPE_OPTIONS.map((option) => option.name);
-  const locations = uniqueNames(standorte).filter((name) => !workTypeNames.includes(name));
+  const reservedNames = [...workTypeNames, ...LEGACY_WORK_TYPE_OPTIONS.map((option) => option.name)];
+  const locations = uniqueNames(standorte).filter((name) => !reservedNames.includes(name));
   return [...locations, ...workTypeNames];
 }
 
@@ -32,8 +35,19 @@ function workerStandortOptions(standorte) {
   );
 }
 
+function preserveLegacyStandortOptions(desiredOptions, existingOptions) {
+  const legacyNames = new Set(LEGACY_WORK_TYPE_OPTIONS.map((option) => option.name));
+  const desiredNames = new Set(desiredOptions.map((option) => option.name));
+  return [
+    ...desiredOptions,
+    ...existingOptions.filter((option) => legacyNames.has(option.name) && !desiredNames.has(option.name)),
+  ];
+}
+
 module.exports = {
+  LEGACY_WORK_TYPE_OPTIONS,
   WORK_TYPE_OPTIONS,
+  preserveLegacyStandortOptions,
   workerStandortNames,
   workerStandortOptions,
 };

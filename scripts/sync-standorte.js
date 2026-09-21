@@ -11,7 +11,9 @@ const {
   updatePage,
 } = require("./notion");
 const {
+  LEGACY_WORK_TYPE_OPTIONS,
   WORK_TYPE_OPTIONS,
+  preserveLegacyStandortOptions,
   workerStandortNames,
   workerStandortOptions,
 } = require("./worker-standort-options");
@@ -132,7 +134,7 @@ function relationIds(row) {
  */
 function planD7StandortRelations(d7Rows, d8Rows) {
   const d8ByName = d8StandortIndex(d8Rows);
-  const workTypeNames = new Set(WORK_TYPE_OPTIONS.map((option) => option.name));
+  const workTypeNames = new Set([...WORK_TYPE_OPTIONS, ...LEGACY_WORK_TYPE_OPTIONS].map((option) => option.name));
   const updates = [];
 
   for (const row of d7Rows) {
@@ -157,7 +159,7 @@ function planD7StandortRelations(d7Rows, d8Rows) {
 
 function d7StandortCandidateClauses(d7DataSource, d8Rows) {
   const d8ByName = d8StandortIndex(d8Rows);
-  const workTypeNames = new Set(WORK_TYPE_OPTIONS.map((option) => option.name));
+  const workTypeNames = new Set([...WORK_TYPE_OPTIONS, ...LEGACY_WORK_TYPE_OPTIONS].map((option) => option.name));
   const d7OptionNames = new Set(
     (d7DataSource.properties?.Standort?.select?.options || [])
       .map((option) => String(option.name || ""))
@@ -327,7 +329,7 @@ function standortOptionAdditions(existingOptions, standorte) {
     standorte.map((name) => String(name || "").trim()).filter(Boolean),
   )];
   const desiredByName = new Map(
-    workerStandortOptions(requestedNames).map((option) => [option.name, option]),
+    [...workerStandortOptions(requestedNames), ...LEGACY_WORK_TYPE_OPTIONS].map((option) => [option.name, option]),
   );
   const desired = requestedNames.map(
     (name) => desiredByName.get(name) || { name, color: "blue" },
@@ -360,6 +362,7 @@ function selectedStandortNames(rows) {
  * A selected value is never removed: Notion would invalidate that current day.
  */
 function planD3StandortOptions(existingOptions, desiredOptions, rows) {
+  desiredOptions = preserveLegacyStandortOptions(desiredOptions, existingOptions);
   try {
     return planSelectOptionUpdate(existingOptions, desiredOptions, {
       protectedNames: selectedStandortNames(rows),
@@ -387,7 +390,7 @@ async function syncD3StandortOptions(dataSourceId, desiredOptions, worker) {
   const rows = await queryAll(dataSourceId);
   // Produce the worker-specific diagnostic before handing the actual update
   // to the shared, in-use-safe Select service.
-  planD3StandortOptions(
+  const plan = planD3StandortOptions(
     dataSource.properties?.Standort?.select?.options || [],
     desiredOptions,
     rows,
@@ -396,7 +399,7 @@ async function syncD3StandortOptions(dataSourceId, desiredOptions, worker) {
     dataSourceId,
     dataSource,
     propertyName: "Standort",
-    desiredOptions,
+    desiredOptions: plan.nextOptions,
     protectedNames: selectedStandortNames(rows),
   });
 }
