@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       Name:
-        description: "Exact D1 Vor- und Nachname (one worker only)"
+        description: "Exact D1 Vor- und Nachname (September 2026 only, one worker)"
         required: true
         type: string
       destination_archive:
@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   preflight:
-    name: "1 · Check worker, source, destination & cutoff"
+    name: "1 · Check worker, source, destination & September 2026 dates"
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -29,7 +29,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Read-only preflight (only dates before 1 September 2026)
+      - name: Read-only preflight (1–30 September 2026 only)
         run: node scripts/import-old-archive.js --preflight-only
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
@@ -38,7 +38,7 @@ jobs:
           IMPORT_DESTINATION_ARCHIVE_ID: ${{ inputs.destination_archive }}
 
   copy:
-    name: "2 · Copy and verify historical archive rows"
+    name: "2 · Copy and verify September 2026 archive rows"
     needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 90

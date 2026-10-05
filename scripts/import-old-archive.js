@@ -2,7 +2,8 @@
 
 /**
  * Manual, copy-only migration from the legacy shared archive into one worker's
- * D4. The source is pinned deliberately; it is never an update target.
+ * D4 for September 2026 only. The source is pinned deliberately; it is never
+ * an update target.
  */
 
 const {
@@ -36,7 +37,8 @@ const {
 
 const SOURCE_DATABASE_ID = "4206edef-dfc8-435c-b9a9-296500003907";
 const SOURCE_DATA_SOURCE_ID = "13ee17a3-c636-42fa-90cd-08a6cb719628";
-const EXCLUSIVE_CUTOFF = "2026-09-01";
+const INCLUSIVE_START = "2026-09-01";
+const EXCLUSIVE_CUTOFF = "2026-10-01";
 const SOURCE_SCHEMA = Object.freeze({
   Wochentag: "title",
   Date: "date",
@@ -97,7 +99,7 @@ function selectWorker(rows, exactName, destinationId) {
   const currentMonth = rowText(matches[0], "Current Month");
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(currentMonth) ||
       currentMonth < EXCLUSIVE_CUTOFF.slice(0, 7)) {
-    throw new Error(`${exactName}: D1 Current Month must be September 2026 or later`);
+    throw new Error(`${exactName}: D1 Current Month must be October 2026 or later`);
   }
   if (rowText(matches[0], "Rollover Manifest")) {
     throw new Error(`${exactName}: complete the pending month rollover before importing`);
@@ -163,7 +165,7 @@ function selectedEntries(sourceRows, exactName, workerKey) {
     }
     seenIds.add(normalizeNotionId(row.id));
     const entry = sourceEntry(row, exactName, workerKey);
-    if (entry.datum < EXCLUSIVE_CUTOFF) entries.push(entry);
+    if (entry.datum >= INCLUSIVE_START && entry.datum < EXCLUSIVE_CUTOFF) entries.push(entry);
     else excluded += 1;
   }
   entries.sort((a, b) => a.datum.localeCompare(b.datum) ||
@@ -192,13 +194,21 @@ function archiveRowMatches(row, entry) {
     (row.properties.Standort?.select?.name || "") === entry.standort;
 }
 
-/** Existing D4 rows may only be exact copies from an earlier partial run. */
+/** Preserve other months; September rows must be exact copies of this import. */
 function reconcileDestination(entries, destinationRows) {
   const expected = new Map(entries.map((entry) => [entry.syncKey, entry]));
+  const sourceIds = new Set(entries.map((entry) => normalizeNotionId(entry.sourcePageId)));
   const present = new Set();
   for (const row of destinationRows) {
     const key = rowText(row, "Sync Key");
     const entry = expected.get(key);
+    const actualDate = row.properties?.Datum?.date;
+    const datum = dateOnly(actualDate?.start, row.id);
+    const outsideMonth = datum < INCLUSIVE_START || datum >= EXCLUSIVE_CUTOFF;
+    // A copy whose date was changed must still fail verification, even if it
+    // was moved outside September. Match both persisted source identifiers.
+    if (outsideMonth && !actualDate.end && !actualDate.time_zone && !entry &&
+        !sourceIds.has(normalizeNotionId(rowText(row, "Source Page ID")))) continue;
     if (!entry || present.has(key) || !archiveRowMatches(row, entry)) {
       throw new Error(
         `Destination contains an unexpected, duplicate, or changed D4 page ${row.id}; no import writes made`,
@@ -291,8 +301,9 @@ async function runImport(config, operations = {}) {
   };
   const plan = await prepareImport(config, api);
   console.log(
-    `${plan.worker.name}: ${plan.entries.length} eligible before ${EXCLUSIVE_CUTOFF}; ` +
-    `${plan.excluded} excluded on/after cutoff; ${plan.entries.length - plan.missing.length} already copied`,
+    `${plan.worker.name}: ${plan.entries.length} eligible for September 2026 ` +
+    `(${INCLUSIVE_START} inclusive to ${EXCLUSIVE_CUTOFF} exclusive); ` +
+    `${plan.excluded} excluded outside September; ${plan.entries.length - plan.missing.length} already copied`,
   );
   if (config.preflightOnly) return plan;
 
@@ -331,14 +342,14 @@ async function runImport(config, operations = {}) {
       importProperties(entry),
     );
     if ((index + 1) % 25 === 0 || index + 1 === plan.missing.length) {
-      console.log(`Copied ${index + 1}/${plan.missing.length} remaining historical pages`);
+      console.log(`Copied ${index + 1}/${plan.missing.length} remaining September 2026 pages`);
     }
   }
   const finalRows = await api.queryAll(plan.worker.d4DataSourceId);
   if (reconcileDestination(plan.entries, finalRows).length) {
-    throw new Error("Destination verification failed: some historical pages are missing");
+    throw new Error("Destination verification failed: some September 2026 pages are missing");
   }
-  console.log(`Verified ${plan.entries.length} exact destination pages; old archive unchanged`);
+  console.log(`Verified ${plan.entries.length} exact September 2026 destination pages; old archive unchanged`);
   return plan;
 }
 
@@ -362,6 +373,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  INCLUSIVE_START,
   EXCLUSIVE_CUTOFF,
   SOURCE_DATABASE_ID,
   SOURCE_DATA_SOURCE_ID,

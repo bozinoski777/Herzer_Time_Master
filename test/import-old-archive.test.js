@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  INCLUSIVE_START,
   EXCLUSIVE_CUTOFF,
   SOURCE_DATABASE_ID,
   SOURCE_DATA_SOURCE_ID,
@@ -38,7 +39,7 @@ function d1Row(overrides = {}) {
       "Frontend Page ID": { rich_text: text(IDS.frontend) },
       "User Page ID": { rich_text: [] },
       "Onboarding Status": { select: { name: "Ready" } },
-      "Current Month": { rich_text: text("2026-09") },
+      "Current Month": { rich_text: text("2026-10") },
       "Rollover Manifest": { rich_text: [] },
       "Rollover Status": { select: { name: "Ready" } },
       "D3 Database ID": { rich_text: [] },
@@ -78,21 +79,25 @@ function destinationRow(entry, overrides = {}) {
   };
 }
 
-test("cutoff excludes 1 September 2026 itself and all later dates", () => {
-  assert.equal(EXCLUSIVE_CUTOFF, "2026-09-01");
+test("only September 2026 is selected, including both month boundaries", () => {
+  assert.equal(INCLUSIVE_START, "2026-09-01");
+  assert.equal(EXCLUSIVE_CUTOFF, "2026-10-01");
   const { entries, excluded } = selectedEntries([
-    oldRow(IDS.sourceSept, "2026-09-01"),
-    oldRow(IDS.sourceA, "2026-08-31"),
-    oldRow(IDS.sourceB, "2026-09-02"),
+    oldRow("before", "2026-08-31"),
+    oldRow(IDS.sourceA, "2026-09-01"),
+    oldRow(IDS.sourceB, "2026-09-30"),
+    oldRow("after", "2026-10-01"),
+    oldRow("old-year", "2025-09-15"),
+    oldRow("next-year", "2027-09-15"),
   ], "Ada Lovelace", "wrk_ada");
-  assert.deepEqual(entries.map((entry) => entry.datum), ["2026-08-31"]);
-  assert.equal(excluded, 2);
+  assert.deepEqual(entries.map((entry) => entry.datum), ["2026-09-01", "2026-09-30"]);
+  assert.equal(excluded, 4);
 });
 
 test("same-date old pages get distinct stable destination keys", () => {
   const { entries } = selectedEntries([
-    oldRow(IDS.sourceA, "2026-08-31"),
-    oldRow(IDS.sourceB, "2026-08-31"),
+    oldRow(IDS.sourceA, "2026-09-01"),
+    oldRow(IDS.sourceB, "2026-09-01"),
   ], "Ada Lovelace", "wrk_ada");
   assert.equal(entries.length, 2);
   assert.notEqual(entries[0].syncKey, entries[1].syncKey);
@@ -102,17 +107,17 @@ test("same-date old pages get distinct stable destination keys", () => {
 });
 
 test("invalid/missing dates and wrong exact worker are rejected", () => {
-  for (const badDate of [null, "2026-02-30", "2026-08-31T12:00:00Z"]) {
+  for (const badDate of [null, "2026-02-30", "2026-09-01T12:00:00Z"]) {
     assert.throws(
       () => selectedEntries([oldRow(IDS.sourceA, badDate)], "Ada Lovelace", "wrk_ada"),
       /date-only|invalid Date/,
     );
   }
-  const range = oldRow(IDS.sourceA, "2026-08-31");
+  const range = oldRow(IDS.sourceA, "2026-09-01");
   range.properties.Date.date.end = "2026-09-01";
   assert.throws(() => selectedEntries([range], "Ada Lovelace", "wrk_ada"), /date range/);
   assert.throws(
-    () => selectedEntries([oldRow(IDS.sourceA, "2026-08-31", "Ada B. Lovelace")],
+    () => selectedEntries([oldRow(IDS.sourceA, "2026-09-01", "Ada B. Lovelace")],
       "Ada Lovelace", "wrk_ada"),
     (error) => {
       assert.match(error.message, /outside exact worker "Ada Lovelace"/);
@@ -130,7 +135,7 @@ test("destination identity, duplicate names, pending rollover, and changed rows 
     "Ada Lovelace", IDS.d4Db), /exact workers/);
   assert.throws(() => selectWorker([d1Row({ "Rollover Manifest": { rich_text: text("pending") } })],
     "Ada Lovelace", IDS.d4Db), /pending month rollover/);
-  const { entries } = selectedEntries([oldRow(IDS.sourceA, "2026-08-31")],
+  const { entries } = selectedEntries([oldRow(IDS.sourceA, "2026-09-01")],
     "Ada Lovelace", "wrk_ada");
   assert.throws(() => reconcileDestination(entries, [destinationRow(entries[0], {
     Stunden: { number: 7 },
@@ -141,11 +146,19 @@ test("destination identity, duplicate names, pending rollover, and changed rows 
 
 test("manual import writes only the named worker's D4 and resumes without duplicate pages", async () => {
   const sourceRows = [
-    oldRow(IDS.sourceA, "2026-08-31"),
-    oldRow(IDS.sourceB, "2026-08-31", "Ada Lovelace", "Old Site"),
-    oldRow(IDS.sourceSept, "2026-09-01"),
+    oldRow(IDS.sourceA, "2026-09-01"),
+    oldRow(IDS.sourceB, "2026-09-01", "Ada Lovelace", "Old Site"),
+    oldRow(IDS.sourceSept, "2026-08-31"),
+    oldRow("october", "2026-10-01"),
   ];
-  const destinationRows = [];
+  const existingHistory = ["2026-08-31", "2026-10-01"].map((datum, index) =>
+    destinationRow({
+      sourcePageId: `history-${index}`, syncKey: `history-key-${index}`,
+      datum, wochentag: "Montag", stunden: 8, standort: "Altbau",
+    }));
+  const historySnapshot = structuredClone(existingHistory);
+  const sourceSnapshot = structuredClone(sourceRows);
+  const destinationRows = [...existingHistory];
   const writes = [];
   const sourceDataSource = {
     id: SOURCE_DATA_SOURCE_ID,
@@ -247,17 +260,58 @@ test("manual import writes only the named worker's D4 and resumes without duplic
   };
   const preflight = await runImport({ ...config, preflightOnly: true }, operations);
   assert.equal(preflight.entries.length, 2);
-  assert.equal(preflight.excluded, 1);
+  assert.equal(preflight.excluded, 2);
   assert.deepEqual(writes, []);
 
   await runImport(config, operations);
-  assert.equal(destinationRows.length, 2);
+  assert.equal(destinationRows.length, 4);
+  assert.deepEqual(destinationRows.slice(0, 2), historySnapshot);
+  assert.deepEqual(sourceRows, sourceSnapshot);
   assert.deepEqual(writes.map((write) => write.id), [IDS.d4Ds, IDS.d4Ds, IDS.d4Ds]);
   assert.deepEqual(destinationDataSource.properties.Standort.select.options.map(
     (option) => option.name), ["Altbau", "Old Site"]);
 
   await runImport(config, operations);
-  assert.equal(destinationRows.length, 2);
+  assert.equal(destinationRows.length, 4);
+  assert.deepEqual(destinationRows.slice(0, 2), historySnapshot);
+  assert.deepEqual(sourceRows, sourceSnapshot);
   assert.equal(writes.length, 3);
-  assert.equal(importProperties(preflight.entries[0]).Datum.date.start, "2026-08-31");
+  assert.equal(importProperties(preflight.entries[0]).Datum.date.start, "2026-09-01");
+});
+
+test("September imports require October or later with no active rollover", () => {
+  for (const month of ["2026-08", "2026-09", "", "invalid"]) {
+    assert.throws(() => selectWorker([
+      d1Row({ "Current Month": { rich_text: text(month) } }),
+    ], "Ada Lovelace", IDS.d4Db), /October 2026 or later/);
+  }
+  assert.equal(selectWorker([d1Row()], "Ada Lovelace", IDS.d4Db).workerKey, "wrk_ada");
+  assert.throws(() => selectWorker([
+    d1Row({ "Rollover Status": { select: { name: "Running" } } }),
+  ], "Ada Lovelace", IDS.d4Db), /marked Running/);
+});
+
+test("existing September conflicts and copies moved to other months still fail", () => {
+  const { entries } = selectedEntries([oldRow(IDS.sourceA, "2026-09-15")],
+    "Ada Lovelace", "wrk_ada");
+  for (const overrides of [
+    { "Sync Key": { rich_text: text("unrelated") } },
+    { Datum: { date: { start: "2026-08-31" } } },
+    { Datum: { date: { start: "2026-10-01" } }, "Sync Key": { rich_text: text("changed") } },
+  ]) {
+    assert.throws(() => reconcileDestination(entries, [destinationRow(entries[0], overrides)]),
+      /unexpected, duplicate, or changed/);
+  }
+});
+
+test("a worker with no September entries yields no pages to copy", () => {
+  const { entries, excluded } = selectedEntries([
+    oldRow(IDS.sourceA, "2026-08-31"), oldRow(IDS.sourceB, "2026-10-01"),
+  ], "Ada Lovelace", "wrk_ada");
+  assert.deepEqual(entries, []);
+  assert.equal(excluded, 2);
+  assert.deepEqual(reconcileDestination(entries, [destinationRow({
+    sourcePageId: IDS.sourceA, syncKey: "old-history", datum: "2026-08-31",
+    wochentag: "Montag", stunden: 4, standort: "Altbau",
+  })]), []);
 });
