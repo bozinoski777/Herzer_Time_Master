@@ -47,7 +47,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Add missing Standort choices, copy rows, verify destination
+      - name: Copy rows with Standort by name, verify destination
         run: node scripts/import-old-archive.js
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}

@@ -23,7 +23,6 @@ const {
 } = require("./notion");
 const { assertArchiveDataSource } = require("./day-schemas");
 const { daySyncKey } = require("./day-sync-key");
-const { updateDataSourceSelect } = require("./select-options");
 const {
   assertFrontendIdentity,
   normalizeNotionId,
@@ -296,7 +295,7 @@ async function prepareImport({ exactName, destinationId, d1DataSourceId }, opera
 
 async function runImport(config, operations = {}) {
   const api = {
-    createPage, getDataSource, queryAll, updateDataSourceSelect,
+    createPage, getDataSource, queryAll,
     ...operations,
   };
   const plan = await prepareImport(config, api);
@@ -314,27 +313,12 @@ async function runImport(config, operations = {}) {
     assertWorkerDataSourceReference(plan.worker, "d4", destinationDataSource, {
       schema: assertArchiveDataSource,
     });
-    const optionPlan = await api.updateDataSourceSelect({
-      dataSourceId: plan.worker.d4DataSourceId,
-      dataSource: destinationDataSource,
-      propertyName: "Standort",
-      desiredOptions: plan.requiredOptions,
-      retainExisting: true,
-    });
-    if (optionPlan.added.length) {
-      console.log(`Added ${optionPlan.added.length} missing Standort options to destination D4`);
-    }
-    const checked = await api.getDataSource(plan.worker.d4DataSourceId);
-    assertWorkerDataSourceReference(plan.worker, "d4", checked, {
-      schema: assertArchiveDataSource,
-    });
-    const names = new Set((checked.properties.Standort.select?.options || []).map((option) => option.name));
-    if (plan.requiredOptions.some((option) => !names.has(option.name))) {
-      throw new Error("Destination Standort options could not be verified; no pages created");
-    }
   }
 
   for (const [index, entry] of plan.missing.entries()) {
+    // Select by name: Notion adds missing choices while creating the page.
+    // Do not PATCH the full options array: archives can exceed the request's
+    // 100-option limit. Existing choices/colors remain; new colors are default.
     // POST /pages is intentionally not automatically retried. If the response
     // is ambiguous, this run stops and the next manual run re-queries D4.
     await api.createPage(
@@ -348,6 +332,14 @@ async function runImport(config, operations = {}) {
   const finalRows = await api.queryAll(plan.worker.d4DataSourceId);
   if (reconcileDestination(plan.entries, finalRows).length) {
     throw new Error("Destination verification failed: some September 2026 pages are missing");
+  }
+  const checked = await api.getDataSource(plan.worker.d4DataSourceId);
+  assertWorkerDataSourceReference(plan.worker, "d4", checked, {
+    schema: assertArchiveDataSource,
+  });
+  const names = new Set((checked.properties.Standort.select?.options || []).map((option) => option.name));
+  if (plan.requiredOptions.some((option) => !names.has(option.name))) {
+    throw new Error("Destination verification failed: some Standort options are missing; rerun to verify existing copies");
   }
   console.log(`Verified ${plan.entries.length} exact September 2026 destination pages; old archive unchanged`);
   return plan;

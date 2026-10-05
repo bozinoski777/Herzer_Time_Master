@@ -144,140 +144,164 @@ test("destination identity, duplicate names, pending rollover, and changed rows 
     destinationRow(entries[0])]), /unexpected, duplicate, or changed/);
 });
 
-test("manual import writes only the named worker's D4 and resumes without duplicate pages", async () => {
-  const sourceRows = [
-    oldRow(IDS.sourceA, "2026-09-01"),
-    oldRow(IDS.sourceB, "2026-09-01", "Ada Lovelace", "Old Site"),
-    oldRow(IDS.sourceSept, "2026-08-31"),
-    oldRow("october", "2026-10-01"),
-  ];
-  const existingHistory = ["2026-08-31", "2026-10-01"].map((datum, index) =>
-    destinationRow({
-      sourcePageId: `history-${index}`, syncKey: `history-key-${index}`,
-      datum, wochentag: "Montag", stunden: 8, standort: "Altbau",
+for (const { optionCount, interrupt } of [
+  { optionCount: 0 }, { optionCount: 100 }, { optionCount: 125 },
+  { optionCount: 100, interrupt: true },
+]) {
+  test(`manual import preserves ${optionCount} choices and retries without duplicates (interrupted: ${!!interrupt})`, async () => {
+    const sourceRows = [
+      oldRow(IDS.sourceA, "2026-09-01"),
+      oldRow(IDS.sourceB, "2026-09-01", "Ada Lovelace", "Old Site"),
+      oldRow(IDS.sourceSept, "2026-08-31"),
+      oldRow("october", "2026-10-01"),
+    ];
+    const existingHistory = ["2026-08-31", "2026-10-01"].map((datum, index) =>
+      destinationRow({
+        sourcePageId: `history-${index}`, syncKey: `history-key-${index}`,
+        datum, wochentag: "Montag", stunden: 8, standort: "Altbau",
+      }));
+    const historySnapshot = structuredClone(existingHistory);
+    const sourceSnapshot = structuredClone(sourceRows);
+    const destinationRows = [...existingHistory];
+    const writes = [];
+    const existingOptions = Array.from({ length: optionCount }, (_, index) => ({
+      id: `option-${index}`, name: index === 0 ? "Altbau" : `Historic site ${index}`,
+      color: index % 2 ? "green" : "blue",
     }));
-  const historySnapshot = structuredClone(existingHistory);
-  const sourceSnapshot = structuredClone(sourceRows);
-  const destinationRows = [...existingHistory];
-  const writes = [];
-  const sourceDataSource = {
-    id: SOURCE_DATA_SOURCE_ID,
-    parent: { type: "database_id", database_id: SOURCE_DATABASE_ID },
-    properties: {
-      Wochentag: { type: "title" },
-      Date: { type: "date" },
-      Stunden: { type: "number" },
-      Standort: { type: "select", select: { options: [
-        { name: "Altbau", color: "blue" }, { name: "Old Site", color: "red" },
-      ] } },
-      "Vor- und Nachname": { type: "rich_text" },
-    },
-  };
-  const destinationDataSource = {
-    id: IDS.d4Ds,
-    parent: { type: "database_id", database_id: IDS.d4Db },
-    properties: {
-      Wochentag: { type: "title" },
-      Datum: { type: "date" },
-      Stunden: { type: "number" },
-      Standort: { type: "select", select: { options: [] } },
-      Urlaubstag: { type: "formula" },
-      "Sync Key": { type: "rich_text" },
-      "Source Page ID": { type: "rich_text" },
-    },
-  };
-  const d1 = {
-    id: IDS.d1,
-    properties: Object.fromEntries([
-      ["Vor- und Nachname", "title"], ["Worker Key", "rich_text"],
-      ["Frontend Page ID", "rich_text"], ["Onboarding Status", "select"],
-      ["Current Month", "rich_text"], ["Rollover Manifest", "rich_text"],
-      ["D3 Database ID", "rich_text"], ["D3 Data Source ID", "rich_text"],
-      ["D4 Database ID", "rich_text"], ["D4 Data Source ID", "rich_text"],
-    ].map(([name, type]) => [name, { type }])),
-  };
-  const operations = {
-    getDataSource: async (id) => {
-      if (id === IDS.d1) return d1;
-      if (id === SOURCE_DATA_SOURCE_ID) return sourceDataSource;
-      if (id === IDS.d4Ds) return destinationDataSource;
-      throw new Error(`Unexpected getDataSource ${id}`);
-    },
-    getDatabase: async (id) => {
-      if (id === SOURCE_DATABASE_ID) return {
-        id, data_sources: [{ id: SOURCE_DATA_SOURCE_ID }],
-      };
-      if (id === IDS.d4Db) return {
-        id, parent: { page_id: IDS.frontend }, data_sources: [{ id: IDS.d4Ds }],
-      };
-      throw new Error(`Unexpected getDatabase ${id}`);
-    },
-    getPage: async (id) => {
-      assert.equal(id, IDS.frontend);
-      return { id, properties: {
-        "D1 Record ID": { rich_text: text(IDS.d1Row) },
-        "Worker Key": { rich_text: text("wrk_ada") },
-      } };
-    },
-    queryAll: async (id, filter) => {
-      if (id === IDS.d1) return [d1Row()];
-      if (id === SOURCE_DATA_SOURCE_ID) {
-        assert.deepEqual(filter, {
-          property: "Vor- und Nachname", rich_text: { equals: "Ada Lovelace" },
-        });
-        return sourceRows;
-      }
-      if (id === IDS.d4Ds) return destinationRows;
-      throw new Error(`Unexpected queryAll ${id}`);
-    },
-    updateDataSourceSelect: async ({ dataSourceId, desiredOptions, retainExisting }) => {
-      assert.equal(dataSourceId, IDS.d4Ds);
-      assert.equal(retainExisting, true);
-      writes.push({ type: "options", id: dataSourceId });
-      const current = destinationDataSource.properties.Standort.select.options;
-      const names = new Set(current.map((option) => option.name));
-      const added = desiredOptions.filter((option) => !names.has(option.name));
-      current.push(...added);
-      return { added };
-    },
-    createPage: async (parent, properties) => {
-      assert.equal(parent.data_source_id, IDS.d4Ds);
-      writes.push({ type: "page", id: parent.data_source_id });
-      const entry = {
-        datum: properties.Datum.date.start,
-        wochentag: properties.Wochentag.title.map((item) => item.text.content).join(""),
-        stunden: properties.Stunden.number,
-        standort: properties.Standort.select?.name || "",
-        syncKey: properties["Sync Key"].rich_text.map((item) => item.text.content).join(""),
-        sourcePageId: properties["Source Page ID"].rich_text.map((item) => item.text.content).join(""),
-      };
-      destinationRows.push(destinationRow(entry));
-      return destinationRows.at(-1);
-    },
-  };
-  const config = {
-    exactName: "Ada Lovelace", destinationId: IDS.d4Db, d1DataSourceId: IDS.d1,
-  };
-  const preflight = await runImport({ ...config, preflightOnly: true }, operations);
-  assert.equal(preflight.entries.length, 2);
-  assert.equal(preflight.excluded, 2);
-  assert.deepEqual(writes, []);
+    const optionsSnapshot = structuredClone(existingOptions);
+    let interruptNextCreate = !!interrupt;
+    const sourceDataSource = {
+      id: SOURCE_DATA_SOURCE_ID,
+      parent: { type: "database_id", database_id: SOURCE_DATABASE_ID },
+      properties: {
+        Wochentag: { type: "title" },
+        Date: { type: "date" },
+        Stunden: { type: "number" },
+        Standort: { type: "select", select: { options: [
+          { name: "Altbau", color: "blue" }, { name: "Old Site", color: "red" },
+        ] } },
+        "Vor- und Nachname": { type: "rich_text" },
+      },
+    };
+    const destinationDataSource = {
+      id: IDS.d4Ds,
+      parent: { type: "database_id", database_id: IDS.d4Db },
+      properties: {
+        Wochentag: { type: "title" },
+        Datum: { type: "date" },
+        Stunden: { type: "number" },
+        Standort: { type: "select", select: { options: existingOptions } },
+        Urlaubstag: { type: "formula" },
+        "Sync Key": { type: "rich_text" },
+        "Source Page ID": { type: "rich_text" },
+      },
+    };
+    const d1 = {
+      id: IDS.d1,
+      properties: Object.fromEntries([
+        ["Vor- und Nachname", "title"], ["Worker Key", "rich_text"],
+        ["Frontend Page ID", "rich_text"], ["Onboarding Status", "select"],
+        ["Current Month", "rich_text"], ["Rollover Manifest", "rich_text"],
+        ["D3 Database ID", "rich_text"], ["D3 Data Source ID", "rich_text"],
+        ["D4 Database ID", "rich_text"], ["D4 Data Source ID", "rich_text"],
+      ].map(([name, type]) => [name, { type }])),
+    };
+    const operations = {
+      getDataSource: async (id) => {
+        if (id === IDS.d1) return d1;
+        if (id === SOURCE_DATA_SOURCE_ID) return sourceDataSource;
+        if (id === IDS.d4Ds) return destinationDataSource;
+        throw new Error(`Unexpected getDataSource ${id}`);
+      },
+      getDatabase: async (id) => {
+        if (id === SOURCE_DATABASE_ID) return {
+          id, data_sources: [{ id: SOURCE_DATA_SOURCE_ID }],
+        };
+        if (id === IDS.d4Db) return {
+          id, parent: { page_id: IDS.frontend }, data_sources: [{ id: IDS.d4Ds }],
+        };
+        throw new Error(`Unexpected getDatabase ${id}`);
+      },
+      getPage: async (id) => {
+        assert.equal(id, IDS.frontend);
+        return { id, properties: {
+          "D1 Record ID": { rich_text: text(IDS.d1Row) },
+          "Worker Key": { rich_text: text("wrk_ada") },
+        } };
+      },
+      queryAll: async (id, filter) => {
+        if (id === IDS.d1) return [d1Row()];
+        if (id === SOURCE_DATA_SOURCE_ID) {
+          assert.deepEqual(filter, {
+            property: "Vor- und Nachname", rich_text: { equals: "Ada Lovelace" },
+          });
+          return sourceRows;
+        }
+        if (id === IDS.d4Ds) return destinationRows;
+        throw new Error(`Unexpected queryAll ${id}`);
+      },
+      updateDataSourceSelect: async () => {
+        assert.fail("The importer must never send a bulk dropdown update");
+      },
+      createPage: async (parent, properties) => {
+        assert.equal(parent.data_source_id, IDS.d4Ds);
+        assert.equal(Object.hasOwn(properties.Standort, "options"), false);
+        const choice = properties.Standort.select;
+        if (choice) {
+          assert.deepEqual(Object.keys(choice), ["name"]);
+          const options = destinationDataSource.properties.Standort.select.options;
+          if (!options.some((option) => option.name === choice.name)) {
+            options.push({ id: `new-${options.length}`, name: choice.name, color: "default" });
+          }
+        }
+        writes.push({ type: "page", id: parent.data_source_id });
+        const entry = {
+          datum: properties.Datum.date.start,
+          wochentag: properties.Wochentag.title.map((item) => item.text.content).join(""),
+          stunden: properties.Stunden.number,
+          standort: properties.Standort.select?.name || "",
+          syncKey: properties["Sync Key"].rich_text.map((item) => item.text.content).join(""),
+          sourcePageId: properties["Source Page ID"].rich_text.map((item) => item.text.content).join(""),
+        };
+        destinationRows.push(destinationRow(entry));
+        if (interruptNextCreate) {
+          interruptNextCreate = false;
+          throw new Error("Simulated lost response after successful create");
+        }
+        return destinationRows.at(-1);
+      },
+    };
+    const config = {
+      exactName: "Ada Lovelace", destinationId: IDS.d4Db, d1DataSourceId: IDS.d1,
+    };
+    const preflight = await runImport({ ...config, preflightOnly: true }, operations);
+    assert.equal(preflight.entries.length, 2);
+    assert.equal(preflight.excluded, 2);
+    assert.deepEqual(writes, []);
 
-  await runImport(config, operations);
-  assert.equal(destinationRows.length, 4);
-  assert.deepEqual(destinationRows.slice(0, 2), historySnapshot);
-  assert.deepEqual(sourceRows, sourceSnapshot);
-  assert.deepEqual(writes.map((write) => write.id), [IDS.d4Ds, IDS.d4Ds, IDS.d4Ds]);
-  assert.deepEqual(destinationDataSource.properties.Standort.select.options.map(
-    (option) => option.name), ["Altbau", "Old Site"]);
+    if (interruptNextCreate) {
+      await assert.rejects(runImport(config, operations), /lost response/);
+      assert.equal(writes.length, 1);
+      assert.equal(destinationRows.length, 3);
+    }
+    await runImport(config, operations);
+    assert.equal(destinationRows.length, 4);
+    assert.deepEqual(destinationRows.slice(0, 2), historySnapshot);
+    assert.deepEqual(sourceRows, sourceSnapshot);
+    assert.deepEqual(writes.map((write) => write.id), [IDS.d4Ds, IDS.d4Ds]);
+    const finalOptions = destinationDataSource.properties.Standort.select.options;
+    assert.deepEqual(finalOptions.slice(0, optionCount), optionsSnapshot);
+    assert.deepEqual(finalOptions.slice(optionCount).map((option) => [option.name, option.color]),
+      optionCount ? [["Old Site", "default"]] : [["Altbau", "default"], ["Old Site", "default"]]);
 
-  await runImport(config, operations);
-  assert.equal(destinationRows.length, 4);
-  assert.deepEqual(destinationRows.slice(0, 2), historySnapshot);
-  assert.deepEqual(sourceRows, sourceSnapshot);
-  assert.equal(writes.length, 3);
-  assert.equal(importProperties(preflight.entries[0]).Datum.date.start, "2026-09-01");
-});
+    await runImport(config, operations);
+    assert.equal(destinationRows.length, 4);
+    assert.deepEqual(destinationRows.slice(0, 2), historySnapshot);
+    assert.deepEqual(sourceRows, sourceSnapshot);
+    assert.equal(writes.length, 2);
+    assert.equal(importProperties(preflight.entries[0]).Datum.date.start, "2026-09-01");
+  });
+}
 
 test("September imports require October or later with no active rollover", () => {
   for (const month of ["2026-08", "2026-09", "", "invalid"]) {
