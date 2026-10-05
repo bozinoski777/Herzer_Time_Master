@@ -84,6 +84,7 @@ jobs:
       D8_DATA_SOURCE_ID: ${{ secrets.D8_DATA_SOURCE_ID }}
       AUDIT_SCOPE: ${{ needs.gate.outputs.scope }}
       AUDIT_OUTPUT_DIR: audit-output
+      AUDIT_REDACT_GITHUB: 'true'
       PUBLISH_NOTION: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_notion }}
     steps:
       - uses: actions/checkout@v4
@@ -92,12 +93,25 @@ jobs:
           node-version: 22
       - name: Fetch preceding sync context
         if: needs.gate.outputs.marker == 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/github-script@v8
         with:
-          name: standort-audit-marker
-          path: ${{ runner.temp }}/audit-source
-          github-token: ${{ github.token }}
-          run-id: ${{ github.event.workflow_run.id }}
+          script: |
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+              ...context.repo, run_id: context.payload.workflow_run.id, per_page: 100,
+            });
+            const marker = artifacts.find(a => a.name === 'standort-audit-marker' && !a.expired);
+            if (!marker) throw new Error('Preceding completion marker is unavailable');
+            const response = await github.rest.actions.downloadArtifact({
+              ...context.repo, artifact_id: marker.id, archive_format: 'zip',
+            });
+            fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'audit-source.zip'), Buffer.from(response.data));
+      - name: Extract preceding sync marker
+        if: needs.gate.outputs.marker == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/audit-source"
+          unzip -p "$RUNNER_TEMP/audit-source.zip" standort-audit-marker.json > "$RUNNER_TEMP/audit-source/standort-audit-marker.json"
       - name: Read preceding sync context
         if: needs.gate.outputs.marker == 'true'
         run: node scripts/audit-trigger.js marker "$RUNNER_TEMP/audit-source/standort-audit-marker.json"
@@ -114,6 +128,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: independent-audit-${{ github.run_id }}-${{ github.run_attempt }}
-          path: audit-output/
+          path: audit-output/github/
           retention-days: 90
           if-no-files-found: error

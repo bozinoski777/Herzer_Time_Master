@@ -18,6 +18,26 @@ function markdown(report) {
     "## Totals", "", ...report.totals.map((t) => `- ${safe(t.database)} ${safe(t.worker || t.standort || "")}: ${safe(JSON.stringify(t.groups || { rows: t.rows, expectedHours: t.expectedHours, actualHours: t.actualHours }))}`), "",
     "This audit compares stored records. Matching copies do not independently prove the hours worked. Current-scope results do not cover historical totals.", ""].join("\n");
 }
+// This repository is public. GitHub receives issue categories/counts only;
+// never publish employee identifiers, dates, hours, source URLs or API errors.
+function publicReport(report) {
+  const issues = new Map();
+  for (const f of report.findings) {
+    const key = `${f.severity}:${f.code}`;
+    const entry = issues.get(key) || { severity: f.severity, code: f.code, count: 0 };
+    entry.count++; issues.set(key, entry);
+  }
+  return { version: report.version, scope: report.scope, runId: report.runId, startedAt: report.startedAt,
+    status: report.status, counts: report.counts, checks: { history: report.coverage?.history || "not checked", locationTotals: report.coverage?.locationTotals || "not checked" },
+    findings: [...issues.values()], detail: "Employee-level details are available only in the private Notion Datenprüfung report." };
+}
+function publicMarkdown(report) {
+  const visible = publicReport(report);
+  return [`# Datenprüfung · ${visible.scope} · ${visible.status}`, "", visible.detail, "",
+    `Errors: ${visible.counts.error} · Warnings: ${visible.counts.warning} · Incomplete: ${visible.counts.incomplete}`, "",
+    `History: ${visible.checks.history}; location totals: ${visible.checks.locationTotals}.`, "",
+    ...visible.findings.map((f) => `- ${f.severity}: ${f.code} (${f.count})`), ""].join("\n");
+}
 function rich(content) { return notion.richText(String(content)).rich_text; }
 function properties() {
   return { Prüfung: { title: {} }, Zeitpunkt: { date: {} }, Umfang: { select: { options: [{ name: "current", color: "blue" }, { name: "full", color: "purple" }] } },
@@ -105,4 +125,4 @@ async function publish(report, config, api = notion) {
   await api.updatePage(page.id, { Status: notion.select(STATUS[report.status]) });
   return { pageId: page.id, databaseId: db.id, url: page.url || `https://www.notion.so/${norm(page.id)}` };
 }
-module.exports = { SCHEMA, MARKER, coverageText, markdown, reportStore, publish };
+module.exports = { SCHEMA, MARKER, coverageText, markdown, publicReport, publicMarkdown, reportStore, publish };

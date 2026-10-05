@@ -6,7 +6,7 @@ The audit reads business databases and never repairs or rewrites D1, worker fron
 
 `npm run audit` checks current data and writes `audit-output/audit.json` and `audit-output/audit.md`. `npm run audit -- --scope=full` adds all archives, D7 history, vacation values, and full D8 totals. Add `--publish-notion` to create/recover the report database and publish. The required environment variables are `NOTION_TOKEN`, `D1_DATA_SOURCE_ID`, `D7_DATA_SOURCE_ID`, and `D8_DATA_SOURCE_ID`. There is no repair mode.
 
-The GitHub **Independent data audit** workflow offers the same two scopes and an optional **publish_notion** switch (off for manual runs by default). Reports remain available as run summaries and artifacts for 90 days. Detailed reports contain worker information and are intended for repository administrators, just like the existing workflows. Notion reports remain until management chooses to remove them.
+The GitHub **Independent data audit** workflow offers the same two scopes and an optional **publish_notion** switch (off for manual runs by default). Reports remain available as run summaries and artifacts for 90 days. This repository is public: GitHub summaries and uploaded JSON contain only issue categories and counts, with no employee names, dates, hours, IDs, source links, or raw API errors. Detailed reports stay in private Notion; temporary detailed files on the runner are never uploaded. Local runs still produce full reports. Notion reports remain until management chooses to remove them.
 
 - **OK / PASS:** Every applicable check in this scope completed and agrees.
 - **Hinweise / WARNING:** No confirmed inconsistency, but there are coverage exceptions such as selective September 2026 imports, pending onboarding, or edits awaiting the next sync.

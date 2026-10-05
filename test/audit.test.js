@@ -228,3 +228,10 @@ test("publisher does not overwrite an unowned database even if its title matches
   f.api.getDatabase = async (n) => { const db = await retrieve(n); if (db.description) db.description = []; return db; };
   await assert.rejects(publish(compareSnapshot(fixture(), opts), opts, f.api), /not owned/); assert.equal(f.writes.length, 0);
 });
+test("public GitHub reports never contain employee data or raw failures", () => {
+  const { publicReport, publicMarkdown } = require("../scripts/audit-report");
+  const s = fixture(); s.d7[0].properties.Stunden.number = 999.123; const report = compareSnapshot(s, opts);
+  report.findings.push({ severity: "incomplete", code: "api-error", message: "secret personal content", worker: "New Name", records: [] });
+  const output = JSON.stringify(publicReport(report)) + publicMarkdown(report);
+  for (const value of ["New Name", "wrk_1", "999.123", id(21), "2026-10-01", "secret personal content", "www.notion.so"]) assert.equal(output.includes(value), false, value);
+});
