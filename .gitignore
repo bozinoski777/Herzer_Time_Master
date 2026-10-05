@@ -13,3 +13,6 @@ yarn-error.log*
 .DS_Store
 .idea/
 .vscode/
+
+# Audit output contains worker records
+audit-output/

@@ -20,6 +20,7 @@ concurrency:
   # This reads and writes each worker's current D3/D1 state. Sharing the
   # mutation group prevents overlap with daily sync or Month Rollover.
   group: herzer-notion-mutations
+  queue: max
   cancel-in-progress: false
 
 jobs:

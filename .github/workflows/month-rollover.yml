@@ -31,6 +31,7 @@ permissions:
 # job is safer than overlapping Notion writes to the same D3/D4/D7 records.
 concurrency:
   group: herzer-notion-mutations
+  queue: max
   cancel-in-progress: false
 
 jobs:

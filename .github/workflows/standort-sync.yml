@@ -25,6 +25,7 @@ permissions:
 concurrency:
   # Shared by every workflow that writes to the Herzer 2.0 POC.
   group: herzer-notion-mutations
+  queue: max
   cancel-in-progress: false
 
 jobs:
@@ -71,7 +72,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Reconcile D3 options, D7 relations and D8 page views
+      - id: standort_sync
+        name: Reconcile D3 options, D7 relations and D8 page views
         run: node scripts/sync-standorte.js
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
@@ -79,3 +81,28 @@ jobs:
           D7_DATA_SOURCE_ID: ${{ secrets.D7_DATA_SOURCE_ID }}
           D8_DATA_SOURCE_ID: ${{ secrets.D8_DATA_SOURCE_ID }}
           D7_STANDORT_FULL_AUDIT: ${{ github.event_name == 'workflow_dispatch' && inputs.full_d7_audit && 'true' || 'false' }}
+      - name: Record completed Standort attempt
+        if: always() && (steps.standort_sync.outcome == 'success' || steps.standort_sync.outcome == 'failure')
+        env:
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id || '' }}
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion || '' }}
+          SOURCE_STARTED: ${{ github.event.workflow_run.run_started_at || '' }}
+          STANDORT_OUTCOME: ${{ steps.standort_sync.outcome }}
+        run: |
+          node - <<'JS'
+          const fs = require('node:fs');
+          fs.writeFileSync(`${process.env.RUNNER_TEMP}/standort-audit-marker.json`, JSON.stringify({
+            version: 1,
+            dailyRunId: process.env.SOURCE_RUN_ID,
+            dailyConclusion: process.env.SOURCE_CONCLUSION,
+            syncCutoff: process.env.SOURCE_STARTED,
+            standortConclusion: process.env.STANDORT_OUTCOME,
+          }));
+          JS
+      - name: Publish completion marker for independent audit
+        if: always() && (steps.standort_sync.outcome == 'success' || steps.standort_sync.outcome == 'failure')
+        uses: actions/upload-artifact@v4
+        with:
+          name: standort-audit-marker
+          path: ${{ runner.temp }}/standort-audit-marker.json
+          retention-days: 7

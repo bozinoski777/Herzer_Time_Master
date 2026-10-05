@@ -1,0 +1,119 @@
+name: Independent data audit
+
+on:
+  workflow_run:
+    workflows: ["Standort sync"]
+    types: [completed]
+    branches: [main]
+  schedule:
+    # 04:35 Europe/Berlin; choose CET/CEST in the gate, including DST Sundays.
+    - cron: "35 2 * * 0"
+    - cron: "35 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: Audit current entries or all history
+        type: choice
+        options: [current, full]
+        default: current
+      publish_notion:
+        description: Publish to the private Datenprüfung report database
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: herzer-notion-mutations
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    if: github.event_name == 'workflow_dispatch' || vars.AUDIT_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      scope: ${{ steps.manual.outputs.scope || steps.schedule.outputs.scope || steps.source.outputs.scope }}
+      marker: ${{ steps.source.outputs.marker }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - id: manual
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          AUDIT_SCOPE: ${{ inputs.scope }}
+        run: echo "scope=$AUDIT_SCOPE" >> "$GITHUB_OUTPUT"
+      - id: schedule
+        if: github.event_name == 'schedule'
+        env:
+          AUDIT_SCHEDULE: ${{ github.event.schedule }}
+        run: node scripts/audit-trigger.js
+      - id: source
+        if: github.event_name == 'workflow_run'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            if (run.head_repository.full_name !== `${context.repo.owner}/${context.repo.repo}` || run.head_branch !== 'main') return;
+            const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+              ...context.repo, run_id: run.id, per_page: 100,
+            });
+            const marker = artifacts.some(a => a.name === 'standort-audit-marker' && !a.expired);
+            if (marker) {
+              core.setOutput('scope', 'current');
+              core.setOutput('marker', 'true');
+            } else if (['failure', 'cancelled', 'timed_out'].includes(run.conclusion)) {
+              // A setup/marker-upload failure must not silently erase coverage.
+              core.setOutput('scope', 'current');
+              core.setOutput('marker', 'missing');
+            }
+
+  audit:
+    needs: gate
+    if: needs.gate.outputs.scope != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+      D1_DATA_SOURCE_ID: ${{ secrets.D1_DATA_SOURCE_ID }}
+      D7_DATA_SOURCE_ID: ${{ secrets.D7_DATA_SOURCE_ID }}
+      D8_DATA_SOURCE_ID: ${{ secrets.D8_DATA_SOURCE_ID }}
+      AUDIT_SCOPE: ${{ needs.gate.outputs.scope }}
+      AUDIT_OUTPUT_DIR: ${{ runner.temp }}/audit-output
+      PUBLISH_NOTION: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_notion }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fetch preceding sync context
+        if: needs.gate.outputs.marker == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: standort-audit-marker
+          path: ${{ runner.temp }}/audit-source
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+      - name: Read preceding sync context
+        if: needs.gate.outputs.marker == 'true'
+        run: node scripts/audit-trigger.js marker "$RUNNER_TEMP/audit-source/standort-audit-marker.json"
+      - name: Record upstream setup failure
+        if: needs.gate.outputs.marker == 'missing'
+        run: echo 'AUDIT_UPSTREAM_FAILURE=Standort workflow failed before its completion marker was published' >> "$GITHUB_ENV"
+      - name: Independently compare databases and publish report
+        run: |
+          args=("--scope=$AUDIT_SCOPE")
+          if [[ "$PUBLISH_NOTION" == "true" ]]; then args+=(--publish-notion); fi
+          node scripts/audit.js "${args[@]}"
+      - name: Keep audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: independent-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/audit-output/
+          retention-days: 90
+          if-no-files-found: error
