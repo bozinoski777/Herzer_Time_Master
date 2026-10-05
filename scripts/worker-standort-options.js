@@ -17,6 +17,10 @@ const WORK_TYPE_OPTIONS = [
 // Retain old selections, but never provision these choices for new workers.
 const LEGACY_WORK_TYPE_OPTIONS = [{ name: "Teil-Tag", color: "gray" }];
 
+// Add only when onboarding creates a database; sync/rollover retain these
+// where already present without backfilling existing workers.
+const ONBOARDING_WORK_TYPE_OPTIONS = [{ name: "Kurzarbeit", color: "gray" }];
+
 function uniqueNames(values) {
   return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
 }
@@ -29,14 +33,26 @@ function workerStandortNames(standorte) {
 }
 
 function workerStandortOptions(standorte) {
-  const workTypeByName = new Map(WORK_TYPE_OPTIONS.map((option) => [option.name, option]));
+  const workTypeByName = new Map(
+    [...WORK_TYPE_OPTIONS, ...ONBOARDING_WORK_TYPE_OPTIONS].map((option) => [option.name, option]),
+  );
   return workerStandortNames(standorte).map(
     (name) => workTypeByName.get(name) || { name, color: "blue" },
   );
 }
 
+function newWorkerStandortOptions(standorte) {
+  const onboardingNames = new Set(ONBOARDING_WORK_TYPE_OPTIONS.map((option) => option.name));
+  return [
+    ...workerStandortOptions(standorte).filter((option) => !onboardingNames.has(option.name)),
+    ...ONBOARDING_WORK_TYPE_OPTIONS,
+  ];
+}
+
 function preserveLegacyStandortOptions(desiredOptions, existingOptions) {
-  const legacyNames = new Set(LEGACY_WORK_TYPE_OPTIONS.map((option) => option.name));
+  const legacyNames = new Set(
+    [...LEGACY_WORK_TYPE_OPTIONS, ...ONBOARDING_WORK_TYPE_OPTIONS].map((option) => option.name),
+  );
   const desiredNames = new Set(desiredOptions.map((option) => option.name));
   return [
     ...desiredOptions,
@@ -46,7 +62,9 @@ function preserveLegacyStandortOptions(desiredOptions, existingOptions) {
 
 module.exports = {
   LEGACY_WORK_TYPE_OPTIONS,
+  ONBOARDING_WORK_TYPE_OPTIONS,
   WORK_TYPE_OPTIONS,
+  newWorkerStandortOptions,
   preserveLegacyStandortOptions,
   workerStandortNames,
   workerStandortOptions,

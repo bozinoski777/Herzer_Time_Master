@@ -45,7 +45,7 @@ const {
   assertDayDataSource,
   currentMonthDatabaseProperties,
 } = require("./day-schemas");
-const { workerStandortOptions } = require("./worker-standort-options");
+const { newWorkerStandortOptions, workerStandortOptions } = require("./worker-standort-options");
 const { EMPLOYMENT_SCHEMA } = require("./vacation-carryover");
 const {
   planSelectOptionUpdate,
@@ -655,9 +655,11 @@ async function resolveWorkerPage(row, name, key) {
 }
 
 function dayDatabaseProperties(standorte, archive = false) {
-  return archive
+  const properties = archive
     ? archiveDatabaseProperties(standorte)
     : currentMonthDatabaseProperties(standorte);
+  properties.Standort.select.options = newWorkerStandortOptions(standorte);
+  return properties;
 }
 
 async function createWorkerDatabase(parentPageId, databaseTitle, standorte, archive) {

@@ -12,6 +12,7 @@ const {
 } = require("./notion");
 const {
   LEGACY_WORK_TYPE_OPTIONS,
+  ONBOARDING_WORK_TYPE_OPTIONS,
   WORK_TYPE_OPTIONS,
   preserveLegacyStandortOptions,
   workerStandortNames,
@@ -134,7 +135,7 @@ function relationIds(row) {
  */
 function planD7StandortRelations(d7Rows, d8Rows) {
   const d8ByName = d8StandortIndex(d8Rows);
-  const workTypeNames = new Set([...WORK_TYPE_OPTIONS, ...LEGACY_WORK_TYPE_OPTIONS].map((option) => option.name));
+  const workTypeNames = new Set([...WORK_TYPE_OPTIONS, ...LEGACY_WORK_TYPE_OPTIONS, ...ONBOARDING_WORK_TYPE_OPTIONS].map((option) => option.name));
   const updates = [];
 
   for (const row of d7Rows) {
@@ -159,7 +160,7 @@ function planD7StandortRelations(d7Rows, d8Rows) {
 
 function d7StandortCandidateClauses(d7DataSource, d8Rows) {
   const d8ByName = d8StandortIndex(d8Rows);
-  const workTypeNames = new Set([...WORK_TYPE_OPTIONS, ...LEGACY_WORK_TYPE_OPTIONS].map((option) => option.name));
+  const workTypeNames = new Set([...WORK_TYPE_OPTIONS, ...LEGACY_WORK_TYPE_OPTIONS, ...ONBOARDING_WORK_TYPE_OPTIONS].map((option) => option.name));
   const d7OptionNames = new Set(
     (d7DataSource.properties?.Standort?.select?.options || [])
       .map((option) => String(option.name || ""))

@@ -22,6 +22,7 @@ const {
   frontendProperties,
   hasAnnualVacationValue,
   manualOnboardingChecklistBlocks,
+  recoveredStandortOptions,
 } = require("../scripts/onboard-workers");
 
 test("Standort combines active sites and the former day-type choices once", () => {
@@ -94,10 +95,24 @@ test("new worker D3/D4 schemas use one Standort select and no Tagtyp property", 
   assert.equal("Tagtyp" in d4, false);
   assert.deepEqual(
     d3.Standort.select.options.map((option) => option.name),
-    ["Berlin", ...WORK_TYPE_OPTIONS.map((option) => option.name)],
+    ["Berlin", ...WORK_TYPE_OPTIONS.map((option) => option.name), "Kurzarbeit"],
   );
+  for (const properties of [d3, d4]) {
+    assert.deepEqual(properties.Standort.select.options.find((option) => option.name === "Kurzarbeit"),
+      { name: "Kurzarbeit", color: "gray" });
+  }
+  assert.equal(dayDatabaseProperties(["Kurzarbeit"]).Standort.select.options
+    .filter((option) => option.name === "Kurzarbeit").length, 1);
   assert.ok(d4["Sync Key"]);
   assert.equal("Monat" in d4, false);
+});
+
+test("onboarding recovery does not backfill Kurzarbeit into an existing database", () => {
+  const existing = workerStandortOptions(["Berlin"]);
+  assert.deepEqual(recoveredStandortOptions(existing, ["Berlin"]).additions, []);
+  const kurzarbeit = { id: "short-time", name: "Kurzarbeit", color: "gray" };
+  assert.deepEqual(preserveLegacyStandortOptions(existing, [...existing, kurzarbeit]),
+    [...existing, kurzarbeit]);
 });
 
 test("new worker frontends put the exact four-section manual checklist in a callout", () => {

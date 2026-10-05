@@ -20,6 +20,31 @@ const {
 const { workerStandortOptions } = require("../scripts/worker-standort-options");
 const { buildRolloverManifest } = require("../scripts/rollover-manifest");
 
+test("D3 sync preserves Kurzarbeit only for workers who already have it", () => {
+  const existing = workerStandortOptions(["Berlin"]);
+  const oldWorker = planD3StandortOptions(existing, existing, []);
+  assert.equal(oldWorker.nextOptions.some((option) => option.name === "Kurzarbeit"), false);
+  assert.deepEqual(oldWorker.added, []);
+  const kurzarbeit = { id: "short-time", name: "Kurzarbeit", color: "gray" };
+  const newWorker = planD3StandortOptions([...existing, kurzarbeit], existing, []);
+  assert.deepEqual(newWorker.nextOptions.find((option) => option.name === "Kurzarbeit"),
+    { id: "short-time", name: "Kurzarbeit" });
+  assert.deepEqual(newWorker.removed, []);
+});
+
+test("Kurzarbeit is a non-location work choice in D7 reconciliation", () => {
+  const row = { id: "short-time-day", properties: {
+    Standort: { select: { name: "Kurzarbeit" } },
+    "Standort (D8)": { relation: [] },
+  } };
+  assert.deepEqual(planD7StandortRelations([row], []), []);
+  const filters = d7StandortCandidateFilters(d7DataSource(["Kurzarbeit"]), []);
+  assert.ok(filters.flatMap((filter) => filter.or).some((clause) =>
+    clause.and?.[0]?.select?.equals === "Kurzarbeit" &&
+    clause.and[1]?.relation?.is_not_empty === true));
+  assert.deepEqual(standortOptionAdditions([], ["Kurzarbeit"]), [{ name: "Kurzarbeit", color: "gray" }]);
+});
+
 function d8Row(id, name) {
   return {
     id,
