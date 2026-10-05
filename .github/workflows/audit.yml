@@ -83,7 +83,7 @@ jobs:
       D7_DATA_SOURCE_ID: ${{ secrets.D7_DATA_SOURCE_ID }}
       D8_DATA_SOURCE_ID: ${{ secrets.D8_DATA_SOURCE_ID }}
       AUDIT_SCOPE: ${{ needs.gate.outputs.scope }}
-      AUDIT_OUTPUT_DIR: ${{ runner.temp }}/audit-output
+      AUDIT_OUTPUT_DIR: audit-output
       PUBLISH_NOTION: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_notion }}
     steps:
       - uses: actions/checkout@v4
@@ -114,6 +114,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: independent-audit-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/audit-output/
+          path: audit-output/
           retention-days: 90
           if-no-files-found: error
