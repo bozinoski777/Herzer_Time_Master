@@ -1,0 +1,36 @@
+name: Copy D4 history to D7 for active Standorte
+
+on:
+  workflow_dispatch:
+    inputs:
+      preview_only:
+        description: "Read-only preview. Uncheck to copy missing archive entries into D7."
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: herzer-notion-mutations
+  cancel-in-progress: false
+
+jobs:
+  import:
+    name: Validate all archives, copy missing entries and verify D7
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Import D4 history for currently active D8 Standorte
+        run: node scripts/import-d4-to-d7.js
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          D1_DATA_SOURCE_ID: ${{ secrets.D1_DATA_SOURCE_ID }}
+          D7_DATA_SOURCE_ID: ${{ secrets.D7_DATA_SOURCE_ID }}
+          D8_DATA_SOURCE_ID: ${{ secrets.D8_DATA_SOURCE_ID }}
+          D4_D7_PREVIEW_ONLY: ${{ inputs.preview_only && 'true' || 'false' }}

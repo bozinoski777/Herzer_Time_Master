@@ -213,6 +213,7 @@ GitHub Actions cron defaults to **UTC**. Daily sync and month rollover use the U
 | --- | --- | --- |
 | Onboard workers | — | Manual only, when a prepared worker should be provisioned |
 | Annual Urlaubsmitnahme | `47 0 * 1 *`, timezone `Europe/Berlin` | 00:47 Berlin time daily in January; applies each eligible annual balance once after December rollover, with manual preview/recovery |
+| Copy D4 history to D7 for active Standorte | — | Manual, all archived months and all onboarded workers; preview enabled by default |
 | Copy old archive to one worker | — | Manual, September 2026 only, one named worker and one destination D4 per run; never scheduled |
 | Daily sync | `15 5,6,13,14 * * 1-5` | Exactly 07:15 and 15:15 Europe/Berlin on weekdays; two UTC entries are safely skipped for DST |
 | Standort sync | After the Daily D3→D7 command finishes | Separate GitHub workflow; also manual; targeted by default, with an optional full-history D7 relation audit |
@@ -233,6 +234,21 @@ The manual **Copy old archive to one worker** action reads only the pinned legac
 4. Check the final verified count in the action log and review the destination D4. If the run stops mid-copy, rerun it with the same two inputs: exact existing copies are skipped and only missing pages are created. A changed, duplicate, or unexpected September destination row stops the action for manual review; it never overwrites that row. An existing copy whose date was changed outside September also stops the action. Other months remain untouched. Requests use the shared Notion pacing/retry policy, but page creates are not automatically retried after an ambiguous network result.
 
 This migration populates **D4 only**. It does not backfill historical D7 management records or D8 totals. Run it only after the worker's D1 `Current Month` is October 2026 or later and no rollover is pending. Importing a historical `Urlaub` row may affect the worker's current-year vacation KPI; the old archive remains unchanged.
+
+## Manual D4 history backfill into D7
+
+**Copy D4 history to D7 for active Standorte** is a separate, manual, create-only job. It reads the active D8 Standort list and scans every onboarded worker’s D4, including former/inactive workers. It copies matching entries from **all archived months**, preserving blank, zero, negative, and fractional Stunden and separate entries on the same date. Standort matching is case-sensitive after trimming whitespace. Vacation carryovers and entries at inactive/unlisted locations are excluded.
+
+1. Open **Actions → Copy D4 history to D7 for active Standorte → Run workflow**, select **main**, and leave **preview_only** checked. The preview makes no writes. Its log lists active locations with links and eligible, already-present, to-copy, excluded, and conflicting counts by worker and Standort.
+2. Review the complete preview. Workers with no D4 are reported and skipped. Incomplete or conflicting routes, non-Ready onboarding with an archive, pending/running rollovers, ambiguous D8 names, missing original source IDs, invalid source data, and D7 conflicts block the run. Matching D4 entries must precede the worker’s D1 `Current Month` to avoid overlap with normal D3 synchronization.
+3. Start a **new run on main** with **preview_only unchecked** to copy. The job repeats the complete validation before creating anything and rechecks worker routing, source values, and active D8 locations before each worker. It uses the existing `NOTION_TOKEN`, `D1_DATA_SOURCE_ID`, `D7_DATA_SOURCE_ID`, and `D8_DATA_SOURCE_ID` secrets and the shared `herzer-notion-mutations` concurrency group. There is no schedule.
+4. Review the final verified count. Each new D7 row receives its D8 location relation so existing hours rollups include it. The job validates both relation targets and the Sum-of-Stunden rollup. It does not create or repair schemas, charts, or views.
+
+D4’s original `Source Page ID` remains the durable identity in D7, with `Worker Key|Datum|Source Page ID` as the Sync Key. New rows record the D4 database in `Source Database ID`. Exact prior copies from that worker’s D3 or D4 are skipped with their routing and timestamps unchanged. Different hours, dates, worker metadata, or D8 relations, duplicate identities, and ambiguous legacy rows block copying and are reported with record links. They require separate review; this job never patches or deletes an existing D7 row. Original D4 records are never changed.
+
+Standort is written by name while creating each page, avoiding a full dropdown options update and its 100-option request limit. Existing choices/colors remain; Notion assigns the default color to newly added choices. Final verification compares all imported business values, source identity, and D8 relations. It allows five reads with waits of 1, 2, 4, and 8 seconds for delayed query visibility. A create with an ambiguous response is never automatically retried. If interrupted, start a fresh preview and then a new copy run: existing exact copies are skipped. A failure after copying starts may leave valid partial copies; there is no automatic rollback.
+
+For local use, `npm run import-d4-to-d7` defaults to preview; only the exact environment value `D4_D7_PREVIEW_ONLY=false` enables copying. Automated tests use a fake Notion service and do not execute a live import.
 
 ## Controlled POC simulation
 
