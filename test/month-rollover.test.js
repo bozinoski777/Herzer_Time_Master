@@ -33,6 +33,7 @@ const {
   augsburgPaidHolidayName,
 } = require("../scripts/augsburg-holidays");
 const { daySyncKey } = require("../scripts/day-sync-key");
+const { carryoverKey } = require("../scripts/vacation-carryover-record");
 
 test("Berlin calendar date crosses a UTC month boundary correctly", () => {
   assert.deepEqual(
@@ -174,6 +175,49 @@ function sourceEntry(row) {
   const sourceDate = row.properties.Datum.date.start;
   return { row, sourceDate, sourceMonth: sourceDate.slice(0, 7) };
 }
+
+function januaryCarryover() {
+  const row = rolloverDay("carryover", "2027-01-01", { hours: -8 });
+  row.properties.Wochentag = { title: [{ plain_text: "Urlaubsmitnahme" }] };
+  row.properties.Standort = { select: { name: "Urlaub" } };
+  row.properties["Sync Key"] = { rich_text: [{ plain_text: carryoverKey("worker-a", 2026) }] };
+  row.properties["Source Page ID"] = { rich_text: [] };
+  return row;
+}
+
+test("February rollover preserves January carryover alongside actual January 1 entries", () => {
+  const worker = { name: "Ada", workerKey: "worker-a" };
+  const carryover = januaryCarryover();
+  const source = [sourceEntry(rolloverDay("d3-jan-1", "2027-01-01"))];
+  const archived = rolloverDay("d4-jan-1", "2027-01-01", { workerKey: "worker-a", sourcePageId: "d3-jan-1" });
+  const deleted = rolloverDay("d4-deleted", "2027-01-02", { workerKey: "worker-a", sourcePageId: "deleted-source" });
+  assert.deepEqual(staleD4Rows(worker, "2027-01", source, [carryover, archived, deleted]), [deleted]);
+  assert.equal(verifyD4ExactMonth(worker, "2027-01", source, [carryover, archived]), true);
+  assert.deepEqual(staleD4Rows(worker, "2027-01", [], [carryover]), []);
+  assert.equal(verifyD4ExactMonth(worker, "2027-01", [], [carryover]), true);
+  assert.equal(carryover.properties.Stunden.number, -8);
+});
+
+test("January legacy recovery never assigns the carryover row to a same-date D3 page", () => {
+  const worker = { name: "Ada", workerKey: "worker-a" };
+  const source = [sourceEntry(rolloverDay("d3-jan-1", "2027-01-01"))];
+  const legacy = rolloverDay("d4-legacy", "2027-01-01", { workerKey: "worker-a" });
+  const migrations = legacyD4MigrationPlan(worker, "2027-01", source, [januaryCarryover(), legacy]);
+  assert.equal(migrations.length, 1);
+  assert.equal(migrations[0].row.id, "d4-legacy");
+  assert.throws(() => verifyD4ExactMonth(worker, "2027-01", source, [januaryCarryover()]), /exact-set verification/);
+});
+
+test("malformed and duplicate carryovers fail rollover barriers rather than being cleaned up", () => {
+  const worker = { name: "Ada", workerKey: "worker-a" };
+  const duplicate = [januaryCarryover(), { ...januaryCarryover(), id: "duplicate" }];
+  const malformed = januaryCarryover(); malformed.properties.Stunden.number = 0;
+  for (const rows of [duplicate, [malformed]]) {
+    assert.throws(() => staleD4Rows(worker, "2027-01", [], rows), /Urlaubsmitnahme/);
+    assert.throws(() => legacyD4MigrationPlan(worker, "2027-01", [], rows), /Urlaubsmitnahme/);
+    assert.throws(() => verifyD4ExactMonth(worker, "2027-01", [], rows), /Urlaubsmitnahme/);
+  }
+});
 
 test("D4 retry removes only the prior same-worker/month row after a D3 date edit", () => {
   const worker = { name: "Ada", workerKey: "worker-a" };

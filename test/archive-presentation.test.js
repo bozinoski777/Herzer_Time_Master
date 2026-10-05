@@ -2,6 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { VACATION_DAY_FORMULA } = require("../scripts/day-schemas");
 
 const {
   ARCHIVE_ALL_VIEW_TITLE,
@@ -25,6 +26,7 @@ function archiveDataSource(overrides = {}) {
       Wochentag: { id: "weekday", name: "Wochentag", type: "title" },
       Datum: { id: "date", name: "Datum", type: "date" },
       Stunden: { id: "hours", name: "Stunden", type: "number" },
+      Urlaubstag: { id: "vacation-days", name: "Urlaubstag", type: "formula", formula: { expression: VACATION_DAY_FORMULA } },
       Standort: {
         id: "location", name: "Standort", type: "select",
         select: { options: [{ name: "Urlaub" }, { name: "Schützenstr. 70" }] },
@@ -47,6 +49,7 @@ test("archive presentation derives a worker-specific title and keeps only routin
     Datum: "date",
     Stunden: "number",
     Standort: "select",
+    Urlaubstag: "formula",
     "Sync Key": "rich_text",
     "Source Page ID": "rich_text",
   });
@@ -73,6 +76,7 @@ test("archive table payload groups Datum by month and hides technical fields", (
     { property_id: "date", visible: true },
     { property_id: "location", visible: true },
     { property_id: "hours", visible: true },
+    { property_id: "vacation-days", visible: false },
     { property_id: "sync-key", visible: false },
     { property_id: "source-id", visible: false },
   ]);
@@ -139,8 +143,9 @@ test("Urlaub view filters archive rows and groups years newest first", () => {
     sort: { type: "descending" },
     hide_empty_groups: true,
   });
-  assert.deepEqual(payload.configuration.properties,
-    archiveViewPayload(archiveDataSource()).configuration.properties);
+  assert.deepEqual(payload.configuration.properties.filter((p) => p.visible).map((p) => p.property_id),
+    ["weekday", "date", "location", "vacation-days"]);
+  assert.equal(payload.configuration.properties.find((p) => p.property_id === "hours").visible, false);
   assert.throws(
     () => archiveVacationViewPayload(archiveDataSource({
       Standort: { id: "location", type: "select", select: { options: [] } },

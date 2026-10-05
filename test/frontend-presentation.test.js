@@ -2,6 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { VACATION_DAY_FORMULA } = require("../scripts/day-schemas");
 
 const {
   VACATION_CHART_TITLE,
@@ -22,6 +23,7 @@ function dataSource() {
       Datum: { id: "date", name: "Datum", type: "date" },
       Standort: { id: "site", name: "Standort", type: "select" },
       Stunden: { id: "hours", name: "Stunden", type: "number" },
+      Urlaubstag: { id: "vacation-days", name: "Urlaubstag", type: "formula", formula: { expression: VACATION_DAY_FORMULA } },
       "Sync Key": { id: "sync", name: "Sync Key", type: "rich_text" },
       "Source Page ID": { id: "source-id", name: "Source Page ID", type: "rich_text" },
       "Worker Key": { id: "worker-key", name: "Worker Key", type: "rich_text" },
@@ -66,7 +68,7 @@ test("D4 groups directly by Datum month, sorts newest first, and hides technical
   assert.equal(payload.configuration.properties.some((property) => property.property_id === "month"), false);
 });
 
-test("vacation number chart counts Urlaub rows in the current calendar year", () => {
+test("vacation number chart sums Urlaubstag in the current calendar year", () => {
   assert.deepEqual(vacationFilter("2027-01"), {
     and: [
       { property: "Standort", select: { equals: "Urlaub" } },
@@ -84,7 +86,7 @@ test("vacation number chart counts Urlaub rows in the current calendar year", ()
   const payload = vacationChartPayload(dataSource(), "2027-10");
   assert.equal(payload.name, VACATION_CHART_TITLE);
   assert.equal(payload.configuration.chart_type, "number");
-  assert.deepEqual(payload.configuration.value, { aggregator: "count" });
+  assert.deepEqual(payload.configuration.value, { aggregator: "sum", property_id: "vacation-days" });
   assert.equal(payload.configuration.height, "small");
   assert.equal(payload.configuration.hide_title, false);
 });

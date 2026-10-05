@@ -24,12 +24,12 @@ The automation prepares pages and records invite readiness. It intentionally doe
 For every future worker, onboarding sets the D3 database and data-source titles to **`Aktueller Monat`** and the D4 titles to **`<worker full name>s Archiv`** (for example, `Max Müllers Archiv`). It configures the automatically created default table views without creating extra views:
 
 - **Aktueller Monat:** only `Wochentag`, `Datum`, `Standort`, and `Stunden`; sorted by `Datum` ascending, with no date filter.
-- **Archiv:** onboarding renames the existing default table view to **`Alle`**. It is sorted by `Datum` descending and grouped newest-first directly by the `Datum` month; no `Monat` formula is created. `Sync Key` and `Source Page ID` are hidden. Onboarding also creates or recovers a second table view named **`Urlaub`** on the *same* D4 database. It filters `Standort = Urlaub`, sorts days by `Datum` descending, and groups directly by the `Datum` year with newest years first. Neither view has a hard-coded year; later rollovers appear in the right year automatically. The extra view creates no additional archive rows or database.
-- **Genommene Urlaubstage bis Ende letzten Monats:** a small linked D4 number chart on the worker page, placed between D3 and D4. Its filter covers January 1 through December 31 of the current Berlin calendar year. Because D4 contains only completed months, the displayed count is through the end of the prior month. It uses the existing D4 data source, creates no extra time-entry store, and rollover only updates the filter when the calendar year changes.
+- **Archiv:** onboarding renames the existing default table view to **`Alle`**. It is sorted by `Datum` descending and grouped newest-first directly by the `Datum` month; no `Monat` formula is created. `Sync Key`, `Source Page ID`, and `Urlaubstag` are hidden in **Alle**, which shows `Wochentag`, `Datum`, `Standort`, and `Stunden`. Onboarding also creates or recovers a second table view named **`Urlaub`** on the *same* D4 database. It filters `Standort = Urlaub`, sorts days by `Datum` descending, and groups directly by the `Datum` year with newest years first. **Urlaub** shows `Wochentag`, `Datum`, `Standort`, and `Urlaubstag`, with `Stunden` and technical fields hidden. Neither view has a hard-coded year; later rollovers appear in the right year automatically. The extra view creates no additional archive rows or database.
+- **Genommene Urlaubstage bis Ende letzten Monats:** a small linked D4 number chart on the worker page, placed between D3 and D4. Its filter covers January 1 through December 31 of the current Berlin calendar year. Because D4 contains only completed months, the displayed sum of `Urlaubstag` is through the end of the prior month. It uses the existing D4 data source, creates no extra time-entry store, and rollover repairs outdated aggregation within the same year and updates the filter when the calendar year changes, preserving the existing chart name and presentation.
 
-For a day worked at two locations, keep the normal D3 day page and create a second `Teil-Tag` page with the **same `Datum`**. Put the actual first and second D8 location in each page's `Standort` select, and split `Stunden` between the pages; `Teil-Tag` is the extra page's title/template, **not** the location to choose if those hours should appear in a D8 Standort total. Daily sync and rollover preserve both pages independently, and a month may therefore contain more rows than calendar days. The Urlaub chart still counts `Standort = Urlaub` archive **rows**, not distinct dates or fractional vacation days; record partial-day leave only after agreeing how that KPI should be interpreted.
+For a day worked at two locations, keep the normal D3 day page and create a second `Teil-Tag` page with the **same `Datum`**. Put the actual first and second D8 location in each page's `Standort` select, and split `Stunden` between the pages; `Teil-Tag` is the extra page's title/template, **not** the location to choose if those hours should appear in a D8 Standort total. Daily sync and rollover preserve both pages independently, and a month may therefore contain more rows than calendar days. For partial-day leave, use `Standort = Urlaub` on the leave entry and record its actual hours. D4 computes `Urlaubstag = Stunden / 8` for Urlaub entries and 0 for other choices (including Sonderurlaub) or empty hours. The chart sums these fractions: 8 hours = 1 day, 4 hours = 0.5 days, and two 4-hour entries on the same date total 1 day. Fractions are neither rounded nor capped.
 
-Notion's public API can show or hide the generated number-chart label, but cannot set that label's text (for example, replacing `Count all`) or hide the linked database view name. Those two display options require a manual Notion UI adjustment if desired.
+Notion's public API can show or hide the generated number-chart label, but cannot set that label's text (for example, replacing the generated sum label) or hide the linked database view name. Those two display options require a manual Notion UI adjustment if desired.
 
 New worker Standort lists contain active locations plus `Urlaub`, `Sonderurlaub`, `Überstundenausgleich`, `Feiertag`, and `Krank`. `Teil-Tag` is not added during onboarding, Standort sync, or month rollover. Existing workers keep that legacy option where it is already present; their records and historical reporting remain supported. The separate Teil-Tag page/template for split days still applies.
 
@@ -57,6 +57,12 @@ The Standort page uses no Business-plan dashboard and no worker-name list. If an
 
 If a workflow stops at any point, a later run reuses D1 IDs first. If an ID is absent, it checks the one deterministic front-end row and the worker page's exact D3/D4 titles before creating anything. It also recognizes the prior `Archiv`, `D3 · Current Month`, and `D4 · Archive` titles only for crash recovery, then renames and configures those already-created databases instead of duplicating them. A legacy worker page under the approved Secure Timekeeping POC locations is moved into the index without copying its D3/D4 databases or their rows. Ambiguous matches are treated as errors rather than duplicated.
 
+## Annual vacation carryover
+
+**Annual Urlaubsmitnahme** calculates `ending-year vacation total − earned entitlement` and, for a nonzero balance, creates one `Urlaubsmitnahme` page dated January 1 in the worker's D4 archive. It uses `Standort = Urlaub` and `Stunden = adjustment × 8`, preserving the existing formula: unused days become a negative vacation total, excess days a positive total. Employment dates in D1 determine entitlement, with partial calendar months prorated and prior carryover included. Only active, ready workers continuing into the next year receive a balance.
+
+The first supported calculation closes **2026** for **January 1, 2027**. January catch-up runs wait for verified December rollover and reuse a saved calculation without duplicating pages. Monthly rollover explicitly preserves these synthetic archive records. Management must enter `Eintrittsdatum`, optional `Austrittsdatum`, and retain the ending year's `Jahresurlaub` until calculation completes. See [annual carryover setup, preview and recovery](docs/vacation-carryover.md).
+
 ## Shared automation services
 
 The workflows use a small set of common contracts instead of maintaining similar safety logic independently:
@@ -64,6 +70,7 @@ The workflows use a small set of common contracts instead of maintaining similar
 - `worker-identity.js` treats the exact D1 row ID as the primary frontend identity and the exact non-empty Worker Key as the only recovery fallback. Worker names are never identifiers.
 - `worker-database-references.js` parses D3/D4 routes, detects duplicate or crossed references, validates a data source against its stored database ID, and can verify that a database remains under the expected worker frontend page.
 - `day-schemas.js` owns the D3 day contract and D4 archive extension. `archive-presentation.js` owns D4 schema repair, worker-specific title, direct `Datum` month grouping, sort order, and hidden technical columns.
+- `vacation-carryover-record.js` owns the reserved annual balance identity and validates it before annual calculation or monthly archive reconciliation can preserve it.
 - `management-sync.js` is the single D7 upsert/reconciliation service used by both Daily sync and Month rollover. Normal Daily reads are worker/month scoped, and existing D7 pages receive minimal property PATCHes; rollover and final offboarding can still request a full-history safety audit.
 - `standort-presentation.js` creates or recovers the small linked D7 number chart and filtered table on D8 row pages. It adds the computed D7 `Name` column when missing and safely retires only the prior automation-owned dashboard view. The Standort workflow runs this only after D7→D8 relation verification succeeds.
 - `select-options.js` plans and applies color-safe select updates. Existing option IDs never carry a color update, and current-row values can be protected from removal.
@@ -134,12 +141,14 @@ Configure the Notion integration with **read content**, **update content**, and 
 
 ## Required Notion schema
 
+Annual carryover adds D1 `Eintrittsdatum` and `Austrittsdatum` (Dates), `Urlaubsmitnahme Jahr` (Number), `Urlaubsmitnahme Status` (Select: `Running` / `Complete` / `Error`), `Urlaubsmitnahme Fehler` (Text), and `Urlaubsmitnahme Berechnung` (hidden Text calculation checkpoint). See the annual carryover guide above for the required management values.
+
 | Resource | Required properties |
 | --- | --- |
 | **D1** | `Vor- und Nachname` (Title), `Email` (Email), `Jahresurlaub` (Number), `Active` (Checkbox), `Onboarding Status` (Select), `Onboarding Error` (Text), `Onboarded At` (Date), `Worker Key` (Text), `Frontend Page ID` (Text), `Frontend URL` (URL), `Sharing Status` (Select), `User Page ID` (legacy Text), `D3 Database ID` (Text), `D3 Data Source ID` (Text), `D4 Database ID` (Text), `D4 Data Source ID` (Text), `Urlaub Chart View ID` (Text), `Current Month` (Text), `Last Archived Month` (Text), `Last Rollover At` (Date), `Rollover Status` (Select: `Ready` / `Running` / `Error`), `Rollover Error` (Text), `Rollover Manifest` (hidden Text checkpoint), `Offboarding Status` (Select: `Active` / `Revoke Access` / `Final Sync` / `Complete` / `Error`), `Offboarding Error` (Text), `Final Sync At` (Date), `Frontend Access Revoked` / `D3 Access Revoked` / `D4 Access Revoked` (Checkboxes), plus the SMS fields described below. |
 | **Employee Front-ends** | `Vor- und Nachname` (Title), `Email` (Email, visible), `Jahresurlaub` (Number, visible), `Worker Key` (Text, hidden from worker), `D1 Record ID` (Text, hidden from worker) |
 | **D3** created by onboarding | `Wochentag` (Title), `Datum` (Date), `Stunden` (Number), `Standort` (Select: active locations plus gray `Urlaub`, `Sonderurlaub`, `Überstundenausgleich`, `Feiertag`, and `Krank`) |
-| **D4** | `Wochentag` (Title), `Datum` (Date), `Stunden` (Number), `Standort` (Select), `Sync Key` (Text), `Source Page ID` (Text). Newly created archives do not have a `Monat` formula. |
+| **D4** | `Wochentag` (Title), `Datum` (Date), `Stunden` (Number), `Standort` (Select), `Urlaubstag` (Formula: hours ÷ 8 for Urlaub, otherwise 0), `Sync Key` (Text), `Source Page ID` (Text). Newly created archives do not have a `Monat` formula. |
 | **D7** | `Wochentag` (Title), `Datum` (Date), `Stunden` (Number), `Standort` (Select), `Standort (D8)` (Relation), `Vor- und Nachname` (Text), `Name` (Formula: `prop("Vor- und Nachname")`, added by Standort sync for the D8 view), `Worker Key` (Text), `Sync Key` (Text), `Source Page ID` (Text), `Source Database ID` (Text), `Last Synced At` (Date) |
 | **D8** | `Standort` (Title), `Active` (Checkbox), `Arbeitszeiten (D7)` (Relation), `Gearbeitete Stunden` (Rollup: Sum of related D7 `Stunden`). The old optional `Mitarbeitende (einmalig)` rollup may remain but is no longer used or created. |
 
@@ -190,7 +199,7 @@ Running the script without `TAGTYP_MIGRATION_EXECUTE=true` is a read-only prefli
 - The D1 `Urlaub Chart View ID` is saved immediately after creating the linked chart, so a retry reuses the same chart rather than creating another one.
 - Current-month day creation checks each `Datum` first; it never recreates an existing date.
 - Standort synchronization preserves all existing select options before adding active D8 sites and the standard work choices.
-- New D4 databases include hidden `Sync Key` and `Source Page ID` without a derived month property. Existing D4 schemas gain the missing source-ID field on rollover; their `Alle` and `Urlaub` views are refreshed to group directly by `Datum` and to hide an older, unused `Monat` formula if one exists. The formula is not deleted from existing archives, and rollover never has to write a month value.
+- New D4 databases include `Urlaubstag` and hidden `Sync Key` and `Source Page ID` without a derived month property. Existing D4 schemas gain the missing source-ID field on rollover; their `Alle` and `Urlaub` views are refreshed to group directly by `Datum` and to hide an older, unused `Monat` formula if one exists. The formula is not deleted from existing archives, and rollover never has to write a month value.
 - Rollover verifies D4, D7, and D8 relation state before soft-archiving D3. It has no hard-delete code path. Its hidden pre-archive manifest resumes after a partial source archive; detected concurrent edits restore the transaction’s source pages before failing.
 - `Provisioning` records resume automatically. `Error` records remain visible with their diagnostic in D1 until management deliberately changes them back to `Pending`.
 - D7 refuses ambiguous duplicate `Sync Key` or `Source Page ID` values within every result it reconciles. Normal Daily checks the relevant current-month routes and exact current Source Page IDs; rollover and final offboarding deliberately retain full-history duplicate checks. Date edits update the row with the same Source Page ID; missing or undated current-month sources are soft-removed, while historical months are outside that reconciliation scope.
@@ -198,11 +207,12 @@ Running the script without `TAGTYP_MIGRATION_EXECUTE=true` is a read-only prefli
 
 ## Schedules and manual runs
 
-GitHub Actions cron defaults to **UTC**. Existing workflows below use the UTC/DST cadence guard; the SMS workflow uses GitHub's timezone-aware schedule directly.
+GitHub Actions cron defaults to **UTC**. Daily sync and month rollover use the UTC/DST cadence guard; the SMS and annual carryover workflows use GitHub's timezone-aware schedule directly.
 
 | Workflow | Schedule | Intended cadence |
 | --- | --- | --- |
 | Onboard workers | — | Manual only, when a prepared worker should be provisioned |
+| Annual Urlaubsmitnahme | `47 0 * 1 *`, timezone `Europe/Berlin` | 00:47 Berlin time daily in January; applies each eligible annual balance once after December rollover, with manual preview/recovery |
 | Copy old archive to one worker | — | Manual, one named worker and one destination D4 per run; never scheduled |
 | Daily sync | `15 5,6,13,14 * * 1-5` | Exactly 07:15 and 15:15 Europe/Berlin on weekdays; two UTC entries are safely skipped for DST |
 | Standort sync | After the Daily D3→D7 command finishes | Separate GitHub workflow; also manual; targeted by default, with an optional full-history D7 relation audit |
@@ -253,3 +263,15 @@ Node 22 or later is sufficient; there are no npm dependencies. This syntax-only 
 npm run check
 npm test
 ```
+
+## Fractional vacation-day migration
+
+New D4 archives include `Urlaubstag` with the formula:
+
+```text
+if(prop("Standort") == "Urlaub", if(empty(prop("Stunden")), 0, prop("Stunden") / 8), 0)
+```
+
+For existing archives, run `npm run migrate-vacation-days` with `NOTION_TOKEN` and `D1_DATA_SOURCE_ID` configured for this POC to preflight all provisioned workers, including inactive workers. Add `-- --apply` to migrate. The command validates unique D1 routes, D4 ownership, existing Alle/Urlaub views, and saved number-chart references before writing; missing routes or incompatible formulas are reported. Pending workers without D4 are handled by onboarding.
+
+The migration adds the formula once, changes only table column presentation, and changes the chart to Sum of Urlaubstag. It preserves table filters, sorts, groups, column widths, and chart titles, and retains the current-year chart filter (refreshing an outdated year). It never writes hours or creates archive rows or views. It reads back both views and the chart and checks each stored formula result against the original hours. Reruns reuse the same properties and views.

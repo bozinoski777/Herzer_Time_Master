@@ -168,6 +168,7 @@ test("manual import writes only the named worker's D4 and resumes without duplic
       Datum: { type: "date" },
       Stunden: { type: "number" },
       Standort: { type: "select", select: { options: [] } },
+      Urlaubstag: { type: "formula" },
       "Sync Key": { type: "rich_text" },
       "Source Page ID": { type: "rich_text" },
     },

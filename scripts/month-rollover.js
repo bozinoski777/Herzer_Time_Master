@@ -60,6 +60,7 @@ const {
 } = require("./archive-presentation");
 const { assertDayDataSource } = require("./day-schemas");
 const { daySyncKey, parseDaySyncKey } = require("./day-sync-key");
+const { archiveDayRows } = require("./vacation-carryover-record");
 const { HOLIDAY_HOURS, augsburgPaidHolidayName } = require("./augsburg-holidays");
 const {
   syncWorkerToManagement,
@@ -595,7 +596,7 @@ function indexSourceEntries(sourceEntries) {
 function staleD4Rows(worker, sourceMonth, sourceEntries, archiveRows) {
   archiveSourceMonth(sourceEntries, sourceMonth);
   const sources = indexSourceEntries(sourceEntries);
-  const identities = archiveRows
+  const identities = archiveDayRows(archiveRows, worker)
     .map((row) => scopedD4Identity(row, worker, sourceMonth))
     .filter(Boolean);
   const qualifiedSources = new Set(
@@ -622,7 +623,7 @@ function legacyD4MigrationPlan(worker, sourceMonth, sourceEntries, archiveRows) 
   const sources = indexSourceEntries(sourceEntries);
   const seenSources = new Set();
   const migrations = [];
-  for (const row of archiveRows) {
+  for (const row of archiveDayRows(archiveRows, worker)) {
     const identity = scopedD4Identity(row, worker, sourceMonth);
     if (!identity?.legacy) continue;
     const source = sourceEntryForArchiveIdentity(
@@ -640,7 +641,7 @@ function legacyD4MigrationPlan(worker, sourceMonth, sourceEntries, archiveRows) 
 /** Exact D4 barrier for the one worker/month currently being archived. */
 function verifyD4ExactMonth(worker, sourceMonth, sourceEntries, archiveRows) {
   archiveSourceMonth(sourceEntries, sourceMonth);
-  const scopedRows = archiveRows
+  const scopedRows = archiveDayRows(archiveRows, worker)
     .map((row) => scopedD4Identity(row, worker, sourceMonth))
     .filter(Boolean)
     .map((identity) => identity.row);
@@ -879,7 +880,9 @@ async function archiveMonth(worker, sourceMonth, sourceEntries, targetMonth) {
     );
   }
   const staleIds = new Set(staleRows.map((row) => row.id));
-  const index = d4RowsByKeyAndDate(initialArchiveRows.filter((row) => !staleIds.has(row.id)));
+  const index = d4RowsByKeyAndDate(
+    archiveDayRows(initialArchiveRows, worker).filter((row) => !staleIds.has(row.id)),
+  );
   const sources = indexSourceEntries(sourceEntries);
 
   for (const entry of sourceEntries) {
@@ -1127,7 +1130,7 @@ async function rolloverWorker(worker, run) {
         worker.d4DataSourceId,
         run.targetMonth,
       );
-      if (refreshed) console.log(`${worker.name}: Urlaub chart calendar year refreshed.`);
+      if (refreshed) console.log(`${worker.name}: Urlaub chart year/aggregation refreshed.`);
     } catch (chartFailure) {
       console.warn(`${worker.name}: Urlaub chart was not refreshed: ${errorMessage(chartFailure)}`);
     }

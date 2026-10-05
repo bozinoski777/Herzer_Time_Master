@@ -1,0 +1,52 @@
+name: Annual Urlaubsmitnahme
+
+on:
+  schedule:
+    # January 1 starts the annual calculation; remaining January runs recover
+    # only unfinished workers after their December Month Rollover succeeds.
+    - cron: "47 0 * 1 *"
+      timezone: "Europe/Berlin"
+  workflow_dispatch:
+    inputs:
+      target_worker:
+        description: "Optional exact Worker Key or employee name; blank processes all eligible workers."
+        required: false
+        type: string
+      ending_year:
+        description: "Optional closed year, starting with 2026; defaults to the preceding Berlin calendar year."
+        required: false
+        type: string
+      preview:
+        description: "Read-only preview: calculate and report without changing Notion."
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: herzer-notion-mutations
+  cancel-in-progress: false
+
+jobs:
+  carryover:
+    name: Calculate and verify annual vacation balances
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Calculate Urlaubsmitnahme after verified December rollover
+        run: node scripts/vacation-carryover.js
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          D1_DATA_SOURCE_ID: ${{ secrets.D1_DATA_SOURCE_ID }}
+          D7_DATA_SOURCE_ID: ${{ secrets.D7_DATA_SOURCE_ID }}
+          D8_DATA_SOURCE_ID: ${{ secrets.D8_DATA_SOURCE_ID }}
+          EMPLOYEE_FRONTENDS_DATA_SOURCE_ID: ${{ secrets.EMPLOYEE_FRONTENDS_DATA_SOURCE_ID }}
+          VACATION_CARRYOVER_TARGET_WORKER: ${{ github.event_name == 'workflow_dispatch' && inputs.target_worker || '' }}
+          VACATION_CARRYOVER_YEAR: ${{ github.event_name == 'workflow_dispatch' && inputs.ending_year || '' }}
+          VACATION_CARRYOVER_PREVIEW: ${{ github.event_name == 'workflow_dispatch' && inputs.preview && 'true' || 'false' }}

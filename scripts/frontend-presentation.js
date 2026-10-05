@@ -20,7 +20,8 @@ const {
   updateView,
   writableViewProperties,
 } = require("./notion");
-const { DAY_PROPERTY_TYPES } = require("./day-schemas");
+const { DAY_PROPERTY_TYPES, VACATION_DAY_PROPERTY, assertVacationDayFormula } = require("./day-schemas");
+const { normalizeNotionId } = require("./worker-identity");
 const {
   archiveSchemaProperties,
   archiveViewPayload,
@@ -63,10 +64,24 @@ function vacationFilter(targetMonth) {
   };
 }
 
-function vacationChartUsesCalendarYear(view, targetMonth) {
+function andConditions(filter) {
+  if (filter?.and) return filter.and.flatMap(andConditions);
+  return filter ? [filter] : [];
+}
+
+function propertyMatches(actual, name, dataSource) {
+  const decode = (value) => {
+    try { return decodeURIComponent(String(value || "")); } catch { return value; }
+  };
+  return actual === name || (dataSource?.properties?.[name]?.id &&
+    decode(actual) === decode(dataSource.properties[name].id));
+}
+
+function vacationChartUsesCalendarYear(view, targetMonth, dataSource) {
   if (!validMonth(targetMonth)) throw new Error(`Invalid month "${targetMonth}"`);
   const expectedRange = vacationFilter(targetMonth).and.filter((condition) => condition.property === "Datum");
-  const actualRange = (view?.filter?.and || []).filter((condition) => condition.property === "Datum");
+  const actualRange = andConditions(view?.filter).filter((condition) =>
+    propertyMatches(condition.property, "Datum", dataSource));
 
   return expectedRange.every((expected) => actualRange.some((actual) => (
     actual.date?.on_or_after === expected.date?.on_or_after &&
@@ -88,13 +103,14 @@ function currentMonthViewPayload(dataSource) {
 
 function vacationChartPayload(dataSource, targetMonth) {
   assertPropertyTypes(dataSource, DAY_PROPERTY_TYPES);
+  assertVacationDayFormula(dataSource);
   return {
     name: VACATION_CHART_TITLE,
     filter: vacationFilter(targetMonth),
     configuration: {
       type: "chart",
       chart_type: "number",
-      value: { aggregator: "count" },
+      value: { aggregator: "sum", property_id: propertyId(dataSource, VACATION_DAY_PROPERTY) },
       x_axis: null,
       y_axis: null,
       x_axis_property_id: null,
@@ -103,7 +119,7 @@ function vacationChartPayload(dataSource, targetMonth) {
       color_theme: "blue",
       height: "small",
       // Notion exposes only this show/hide toggle for a number chart title;
-      // it does not expose a field for changing the generated "Count all" text.
+      // it does not expose a field for changing the generated value label.
       hide_title: false,
     },
   };
@@ -147,11 +163,13 @@ async function ensureCurrentMonthPresentation(databaseId, dataSourceId) {
   await configureCurrentMonthView(databaseId, dataSourceId);
 }
 
-function isVacationChart(view, dataSourceId) {
+function isVacationChart(view, dataSourceId, { knownView = false } = {}) {
   return (
-    view?.data_source_id === dataSourceId &&
+    normalizeNotionId(view?.data_source_id) === normalizeNotionId(dataSourceId) &&
     view.type === "chart" &&
-    [VACATION_CHART_TITLE, LEGACY_VACATION_CHART_TITLE].includes(view.name)
+    (knownView
+      ? view.configuration?.chart_type === "number"
+      : [VACATION_CHART_TITLE, LEGACY_VACATION_CHART_TITLE].includes(view.name))
   );
 }
 
@@ -188,7 +206,7 @@ async function ensureVacationChart(
 
   if (knownViewId) {
     view = await getView(knownViewId);
-    if (!isVacationChart(view, d4DataSourceId)) {
+    if (!isVacationChart(view, d4DataSourceId, { knownView: true })) {
       throw new Error(`D1 Urlaub chart view ${knownViewId} does not match the worker D4 data source`);
     }
   } else {
@@ -196,7 +214,8 @@ async function ensureVacationChart(
   }
 
   if (view) {
-    await updateView(view.id, payload);
+    const changes = vacationChartUpdate(view, dataSource, targetMonth);
+    if (Object.keys(changes).length) await updateView(view.id, changes);
     return view.id;
   }
 
@@ -213,15 +232,38 @@ async function ensureVacationChart(
   return created.id;
 }
 
-async function updateVacationChartForRollover(viewId, d4DataSourceId, targetMonth) {
+function vacationChartUpdate(view, dataSource, targetMonth) {
+  assertVacationDayFormula(dataSource);
+  const conditions = andConditions(view.filter);
+  const correctFilter = conditions.length === 3 &&
+    vacationChartUsesCalendarYear(view, targetMonth, dataSource) &&
+    conditions.some((condition) => propertyMatches(condition.property, "Standort", dataSource) &&
+      condition.select?.equals === "Urlaub");
+  const value = view.configuration?.value;
+  const correctValue = view.configuration?.chart_type === "number" &&
+    value?.aggregator === "sum" && propertyMatches(value.property_id, VACATION_DAY_PROPERTY, dataSource);
+  return {
+    ...(!correctFilter ? { filter: vacationFilter(targetMonth) } : {}),
+    ...(!correctValue ? { configuration: {
+      type: "chart", chart_type: "number",
+      value: { aggregator: "sum", property_id: propertyId(dataSource, VACATION_DAY_PROPERTY) },
+    } } : {}),
+  };
+}
+
+async function updateVacationChartForRollover(viewId, d4DataSourceId, targetMonth, operations = {}) {
   if (!viewId) return false;
-  const view = await getView(viewId);
-  if (!isVacationChart(view, d4DataSourceId)) {
+  const retrieveView = operations.getView || getView;
+  const ensureSchema = operations.ensureArchiveSchema || ensureArchiveSchema;
+  const update = operations.updateView || updateView;
+  const view = await retrieveView(viewId);
+  if (!isVacationChart(view, d4DataSourceId, { knownView: true })) {
     throw new Error(`D1 Urlaub chart view ${viewId} does not match the worker D4 data source`);
   }
-  if (vacationChartUsesCalendarYear(view, targetMonth)) return false;
-  const dataSource = await getDataSource(d4DataSourceId);
-  await updateView(view.id, vacationChartPayload(dataSource, targetMonth));
+  const dataSource = await ensureSchema(d4DataSourceId);
+  const payload = vacationChartUpdate(view, dataSource, targetMonth);
+  if (Object.keys(payload).length === 0) return false;
+  await update(view.id, payload);
   return true;
 }
 
@@ -284,5 +326,7 @@ module.exports = {
   updateVacationChartForRollover,
   vacationChartPayload,
   vacationChartUsesCalendarYear,
+  vacationChartUpdate,
+  isVacationChart,
   vacationFilter,
 };

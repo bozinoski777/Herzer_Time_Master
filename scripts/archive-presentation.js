@@ -7,9 +7,13 @@ const {
   listAllViews,
   updateDataSource,
   updateView,
+  writableViewProperties,
 } = require("./notion");
 const {
   D4_PROPERTY_TYPES,
+  VACATION_DAY_PROPERTY,
+  archiveFormulaProperties,
+  assertVacationDayFormula,
   archiveMetadataProperties,
   assertArchiveDataSource,
   assertDayDataSource,
@@ -53,7 +57,7 @@ function archiveViewPayload(dataSource) {
       properties: viewProperties(
         dataSource,
         D4_VISIBLE_COLUMNS,
-        archiveHiddenColumns(dataSource),
+        [VACATION_DAY_PROPERTY, ...archiveHiddenColumns(dataSource)],
       ),
       group_by: {
         type: "date",
@@ -82,8 +86,8 @@ function archiveVacationViewPayload(dataSource) {
       type: "table",
       properties: viewProperties(
         dataSource,
-        D4_VISIBLE_COLUMNS,
-        archiveHiddenColumns(dataSource),
+        ["Wochentag", "Datum", "Standort", VACATION_DAY_PROPERTY],
+        ["Stunden", ...archiveHiddenColumns(dataSource)],
       ),
       group_by: {
         type: "date",
@@ -184,6 +188,7 @@ async function ensureArchiveSchema(dataSourceId, operations = {}) {
   const updateSchema = operations.updateDataSource || updateDataSource;
   let dataSource = await retrieveDataSource(dataSourceId);
   assertDayDataSource(dataSource);
+  assertVacationDayFormula(dataSource, { allowMissing: true });
 
   const syncKey = dataSource.properties?.["Sync Key"];
   if (syncKey && syncKey.type !== "rich_text") {
@@ -196,6 +201,9 @@ async function ensureArchiveSchema(dataSourceId, operations = {}) {
   }
 
   const additions = {};
+  if (!dataSource.properties[VACATION_DAY_PROPERTY]) {
+    Object.assign(additions, archiveFormulaProperties());
+  }
   const metadata = archiveMetadataProperties();
   if (!syncKey) additions["Sync Key"] = metadata["Sync Key"];
   if (!sourcePageId) additions["Source Page ID"] = metadata["Source Page ID"];
@@ -206,7 +214,24 @@ async function ensureArchiveSchema(dataSourceId, operations = {}) {
   }
 
   assertArchiveDataSource(dataSource);
+  assertVacationDayFormula(dataSource);
   return dataSource;
+}
+
+// Change only column presentation on existing views. Preserve filters, groups,
+// sorts, widths, and any unrelated settings configured by management.
+function archiveColumnUpdate(dataSource, view) {
+  const vacation = view.name === ARCHIVE_VACATION_VIEW_TITLE;
+  const payload = vacation ? archiveVacationViewPayload(dataSource) : archiveViewPayload(dataSource);
+  const existing = writableViewProperties(dataSource, view.configuration?.properties || []);
+  const expected = payload.configuration.properties;
+  const managedIds = new Set(expected.map((entry) => entry.property_id));
+  const properties = expected.map((entry) => ({
+    ...existing.find((current) => current.property_id === entry.property_id),
+    ...entry,
+  }));
+  properties.push(...existing.filter((entry) => !managedIds.has(entry.property_id)));
+  return { configuration: { type: "table", properties } };
 }
 
 async function configureArchiveView(databaseId, dataSourceId, operations = {}) {
@@ -230,6 +255,7 @@ module.exports = {
   ARCHIVE_VACATION_VIEW_TITLE,
   D4_PROPERTY_TYPES,
   archiveDatabaseTitle,
+  archiveColumnUpdate,
   archiveSchemaProperties: archiveMetadataProperties,
   archiveViewPayload,
   archiveVacationViewPayload,

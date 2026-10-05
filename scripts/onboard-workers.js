@@ -46,6 +46,7 @@ const {
   currentMonthDatabaseProperties,
 } = require("./day-schemas");
 const { workerStandortOptions } = require("./worker-standort-options");
+const { EMPLOYMENT_SCHEMA } = require("./vacation-carryover");
 const {
   planSelectOptionUpdate,
   updateDataSourceSelect,
@@ -180,6 +181,7 @@ const D1_CORE_SCHEMA = {
 const D1_SCHEMA = {
   ...D1_CORE_SCHEMA,
   ...D1_OFFBOARDING_SCHEMA,
+  ...EMPLOYMENT_SCHEMA,
   [ANNUAL_VACATION_PROPERTY]: "number",
 };
 
@@ -526,6 +528,11 @@ async function validateSchema() {
     throw new Error(`D1 property "${ANNUAL_VACATION_PROPERTY}" is ${annualVacation.type}, expected number`);
   }
   const additions = {};
+  for (const [name, type] of Object.entries(EMPLOYMENT_SCHEMA)) {
+    const property = d1.properties?.[name];
+    if (property && property.type !== type) throw new Error(`D1 property "${name}" must be ${type}`);
+    if (!property) additions[name] = { date: {} };
+  }
   if (!chartViewId) additions[VACATION_CHART_VIEW_ID_PROPERTY] = { rich_text: {} };
   if (!annualVacation) additions[ANNUAL_VACATION_PROPERTY] = { number: { format: "number" } };
   if (Object.keys(additions).length > 0) {
