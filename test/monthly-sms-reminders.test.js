@@ -166,14 +166,14 @@ test("phone numbers and worker links must be safe to send", () => {
 test("DE sends the chosen short German reminder with the German month", () => {
   assert.equal(
     reminderBody("2026-09", "https://www.notion.so/worker", "DE"),
-    "Für September 2026 fehlen noch Angaben in deiner Zeiterfassung. Bitte hier ergänzen: https://www.notion.so/worker",
+    "Für September fehlen noch Angaben in deiner Zeiterfassung. Bitte hier ergänzen: https://www.notion.so/worker",
   );
 });
 
 test("MK sends the chosen short Macedonian reminder with the Macedonian month", () => {
   assert.equal(
     reminderBody("2026-09", "https://www.notion.so/worker", "MK"),
-    "Во твојата евиденција на работното време за септември 2026 г. недостигаат податоци. Те молиме дополни ги тука: https://www.notion.so/worker",
+    "Во твојата евиденција фалат саатите за септември. Те молиме дополни ги тука: https://www.notion.so/worker",
   );
 });
 

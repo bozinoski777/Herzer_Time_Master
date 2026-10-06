@@ -244,14 +244,13 @@ function displayMonth(targetMonth, language = "DE") {
   return new Intl.DateTimeFormat(reminderLanguage(language) === "MK" ? "mk-MK" : "de-DE", {
     timeZone: BERLIN_TIME_ZONE,
     month: "long",
-    year: "numeric",
   }).format(date);
 }
 
 function reminderBody(targetMonth, frontendUrl, language = "DE") {
   const month = displayMonth(targetMonth, language);
   if (reminderLanguage(language) === "MK") {
-    return `Во твојата евиденција на работното време за ${month} недостигаат податоци. Те молиме дополни ги тука: ${frontendUrl}`;
+    return `Во твојата евиденција фалат саатите за ${month}. Те молиме дополни ги тука: ${frontendUrl}`;
   }
   return `Für ${month} fehlen noch Angaben in deiner Zeiterfassung. Bitte hier ergänzen: ${frontendUrl}`;
 }
