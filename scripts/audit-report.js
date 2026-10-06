@@ -18,6 +18,24 @@ function markdown(report) {
     "## Totals", "", ...report.totals.map((t) => `- ${safe(t.database)} ${safe(t.worker || t.standort || "")}: ${safe(JSON.stringify(t.groups || { rows: t.rows, expectedHours: t.expectedHours, actualHours: t.actualHours }))}`), "",
     "This audit compares stored records. Matching copies do not independently prove the hours worked. Current-scope results do not cover historical totals.", ""].join("\n");
 }
+function notionMarkdown(report) {
+  // Large import gaps can produce thousands of findings. Preserve all counts,
+  // show examples for every worker/category, and keep full detail encrypted.
+  const groups = new Map();
+  for (const f of report.findings) {
+    const key = JSON.stringify([f.severity, f.code, f.workerKey]);
+    const entry = groups.get(key) || { severity: f.severity, code: f.code, worker: f.worker, findings: [] };
+    entry.findings.push(f); groups.set(key, entry);
+  }
+  const ordered = [...groups.values()].sort((a, b) =>
+    ["error", "incomplete", "warning", "info"].indexOf(a.severity) - ["error", "incomplete", "warning", "info"].indexOf(b.severity));
+  const examples = ordered.flatMap((group) => group.findings.slice(0, 3));
+  const body = markdown({ ...report, findings: examples, totals: report.totals.filter((t) => t.database === "D8") });
+  const summary = ["## Finding groups", "", ...ordered.map((g) =>
+    `- ${g.severity.toUpperCase()} · ${safe(g.worker || "System")} · ${g.code}: ${g.findings.length}`), "",
+    `Showing ${examples.length} representative findings out of ${report.findings.length}. Each group includes up to three examples. ${report.encryptedDetails ? "Full findings are in the encrypted audit download on the GitHub run; the decryption key stays with the administrator." : "Full findings remain in the local audit.json report."}`, ""].join("\n");
+  return body.replace("## Findings", `${summary}\n## Examples`);
+}
 // This repository is public. GitHub receives issue categories/counts only;
 // never publish employee identifiers, dates, hours, source URLs or API errors.
 function publicReport(report) {
@@ -102,7 +120,8 @@ async function publish(report, config, api = notion) {
   // Render headings and clickable record links as native Notion content.
   const signature = (block) => `${block.type}:${JSON.stringify((block[block.type]?.rich_text || []).map((item) => [item.plain_text ?? item.text?.content ?? "", item.text?.link?.url || item.href || ""]))}`;
   const existing = new Set((await api.listAllBlockChildren(page.id)).map(signature));
-  for (const line of markdown(report).split("\n").filter(Boolean)) {
+  const pendingBlocks = [];
+  for (const line of notionMarkdown(report).split("\n").filter(Boolean)) {
     const type = line.startsWith("# ") ? "heading_2" : line.startsWith("## ") ? "heading_3" : "paragraph";
     const plain = line.replace(/^#{1,2} /, "").replace(/\*\*/g, "").replace(/^- /, "");
     for (const content of plain.match(/.{1,1600}/gs) || []) {
@@ -117,12 +136,19 @@ async function publish(report, config, api = notion) {
       const block = { object: "block", type, [type]: { rich_text: items } };
       const key = signature(block);
       if (existing.has(key)) continue;
-      try { await api.appendBlockChildren(page.id, [block]); }
-      catch (error) { if (!(await api.listAllBlockChildren(page.id)).some((b) => signature(b) === key)) throw error; }
+      pendingBlocks.push(block);
       existing.add(key);
+    }
+  }
+  for (let offset = 0; offset < pendingBlocks.length; offset += 50) {
+    const batch = pendingBlocks.slice(offset, offset + 50);
+    try { await api.appendBlockChildren(page.id, batch); }
+    catch (error) {
+      const saved = new Set((await api.listAllBlockChildren(page.id)).map(signature));
+      if (!batch.every((block) => saved.has(signature(block)))) throw error;
     }
   }
   await api.updatePage(page.id, { Status: notion.select(STATUS[report.status]) });
   return { pageId: page.id, databaseId: db.id, url: page.url || `https://www.notion.so/${norm(page.id)}` };
 }
-module.exports = { SCHEMA, MARKER, coverageText, markdown, publicReport, publicMarkdown, reportStore, publish };
+module.exports = { SCHEMA, MARKER, coverageText, markdown, notionMarkdown, publicReport, publicMarkdown, reportStore, publish };

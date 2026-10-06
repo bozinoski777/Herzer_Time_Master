@@ -241,3 +241,16 @@ test("recent source deletions await sync rather than becoming confirmed orphan e
   const r = compareSnapshot(s, { ...opts, syncCutoff: "2026-10-05T13:15:00Z" });
   assert.equal(r.status, "WARNING"); assert.ok(codes(r).includes("awaiting-sync"));
 });
+test("full report encryption round-trips and rejects tampering without exposing worker details", () => {
+  const crypto = require("node:crypto"); const { encryptReport, decryptReport } = require("../scripts/audit-crypto");
+  const pair = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 }); const report = compareSnapshot(fixture(), opts);
+  const envelope = encryptReport(report, pair.publicKey); assert.equal(JSON.stringify(envelope).includes("New Name"), false);
+  assert.deepEqual(decryptReport(envelope, pair.privateKey), report);
+  const bytes = Buffer.from(envelope.ciphertext, "base64"); bytes[0] ^= 1; envelope.ciphertext = bytes.toString("base64");
+  assert.throws(() => decryptReport(envelope, pair.privateKey));
+});
+test("large findings produce grouped Notion summaries with bounded examples", () => {
+  const { notionMarkdown } = require("../scripts/audit-report"); const s = fixture(); s.d7=[]; const report = compareSnapshot(s, opts);
+  report.findings = Array.from({length:10000}, () => structuredClone(report.findings[0]));
+  const body = notionMarkdown(report); assert.ok(body.includes("out of 10000")); assert.ok(body.length < 10000);
+});

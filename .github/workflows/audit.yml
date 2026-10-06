@@ -85,6 +85,7 @@ jobs:
       AUDIT_SCOPE: ${{ needs.gate.outputs.scope }}
       AUDIT_OUTPUT_DIR: audit-output
       AUDIT_REDACT_GITHUB: 'true'
+      AUDIT_REPORT_PUBLIC_KEY: ${{ vars.AUDIT_REPORT_PUBLIC_KEY }}
       PUBLISH_NOTION: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_notion }}
     steps:
       - uses: actions/checkout@v4

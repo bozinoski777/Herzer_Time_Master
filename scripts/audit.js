@@ -2,6 +2,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { encryptReport } = require("./audit-crypto");
 const { collect } = require("./audit-reader");
 const { compareReads, add, finish } = require("./audit-model");
 const { markdown, publicReport, publicMarkdown, publish } = require("./audit-report");
@@ -21,6 +22,7 @@ function configuration(args = process.argv.slice(2), env = process.env, now = ne
     runUrl: env.GITHUB_RUN_ID ? `https://github.com/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}` : "",
     syncCutoff: env.AUDIT_SYNC_CUTOFF || "", upstreamFailure: env.AUDIT_UPSTREAM_FAILURE || "",
     redactGithub: env.AUDIT_REDACT_GITHUB === "true",
+    reportPublicKey: env.AUDIT_REPORT_PUBLIC_KEY || "",
     outputDir: env.AUDIT_OUTPUT_DIR || "audit-output", summaryFile: env.GITHUB_STEP_SUMMARY || "" };
 }
 async function run(config, operations = {}) {
@@ -36,6 +38,7 @@ async function run(config, operations = {}) {
     report = { version: 1, scope: config.scope, runId: config.runId, runUrl: config.runUrl, startedAt: config.startedAt, coverage: {}, totals: [], findings: [] };
     add(report, "incomplete", "audit-failure", error.message); finish(report);
   }
+  report.encryptedDetails = Boolean(config.reportPublicKey);
   const save = () => {
     fs.mkdirSync(config.outputDir, { recursive: true });
     fs.writeFileSync(path.join(config.outputDir, "audit.json"), JSON.stringify(report, null, 2));
@@ -45,6 +48,7 @@ async function run(config, operations = {}) {
       fs.mkdirSync(directory, { recursive: true });
       fs.writeFileSync(path.join(directory, "audit.json"), JSON.stringify(publicReport(report), null, 2));
       fs.writeFileSync(path.join(directory, "audit.md"), publicMarkdown(report));
+      if (config.reportPublicKey) fs.writeFileSync(path.join(directory, "audit-details.enc.json"), JSON.stringify(encryptReport(report, config.reportPublicKey)));
     }
   };
   save(); // Preserve findings even if publication fails.

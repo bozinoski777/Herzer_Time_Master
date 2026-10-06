@@ -40,3 +40,15 @@ Then current audits run after completed Standort attempts, including failures, u
 The stable GitHub run ID is reused on retries. A partially published report stays Unvollständig until all content is saved; ambiguous creates/appends are recovered by reading the existing report. The workflow publishes local artifacts even when data findings or Notion publication fail. Existing GitHub notification settings handle failed runs; this adds no SMS or email sender.
 
 To stop automatic audits, set `AUDIT_ENABLED=false`. This does not change business data or remove existing reports.
+
+## Encrypted detail downloads for this public repository
+
+Repository variable `AUDIT_REPORT_PUBLIC_KEY` can contain an RSA public key. When configured, the GitHub artifact also includes `audit-details.enc.json`: the full JSON report encrypted with AES-256-GCM and an RSA-OAEP-SHA256 wrapped key. Only the public key is sent to GitHub. The rollout key pair is stored locally in ignored `audit-output/keys/`; preserve `private.pem` securely to retain access to these downloads.
+
+Decrypt a downloaded artifact locally:
+
+```sh
+node scripts/audit-crypto.js --decrypt audit-details.enc.json audit-output/keys/private.pem audit-output/decrypted-audit.json
+```
+
+Notion groups repeated findings by worker/category and shows up to three linked examples per group, with all counts preserved. This keeps large historical import gaps readable. The local/encrypted JSON retains every finding and all grouped totals.
