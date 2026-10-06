@@ -259,3 +259,10 @@ test("Notion request IDs are transport metadata, not changing business data", ()
   a.workers[0].frontend = { request_id: "one", id: id(12) }; b.workers[0].frontend = { request_id: "two", id: id(12) };
   assert.equal(compareReads(a, b, opts).status, "PASS");
 });
+test("publisher discovers Control & Automation under the verified POC root", async () => {
+  const f = publisherFixture(); const getPage = f.api.getPage, getDb = f.api.getDatabase, children = f.api.listAllBlockChildren;
+  f.api.getPage = async (n) => n === id(73) ? { id:n, properties: { title: title("Secure Timekeeping POC") } } : { ...await getPage(n), id:n, parent:{page_id:id(73)} };
+  f.api.listAllBlockChildren = async (n) => n === id(73) ? [{ id:id(75),type:"child_page",child_page:{title:"Control & Automation"} }] : n === id(75) ? children(id(73)) : children(n);
+  f.api.getDatabase = async (n) => { const db = await getDb(n); if(n === id(72)) db.parent.page_id=id(75); return db; };
+  await publish(compareSnapshot(fixture(), opts), opts, f.api); assert.equal(f.rows.length,1);
+});

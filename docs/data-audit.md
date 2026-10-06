@@ -1,6 +1,6 @@
 # Independent data audit
 
-The audit reads business databases and never repairs or rewrites D1, worker frontends, D3, D4, D7, or D8. Only `--publish-notion` permits writes, confined to its own **Datenprüfung** database beneath the verified **Control & Automation** parent of D1. That parent is management-only; the publisher inherits its access and does not create sharing links.
+The audit reads business databases and never repairs or rewrites D1, worker frontends, D3, D4, D7, or D8. Only `--publish-notion` permits writes, confined to its own **Datenprüfung** database beneath verified **Control & Automation**. It accepts that page as D1’s parent or as a uniquely named direct child of D1’s **Secure Timekeeping POC** parent. That parent is management-only; the publisher inherits its access and does not create sharing links.
 
 ## Running and interpreting results
 

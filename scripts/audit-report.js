@@ -66,11 +66,24 @@ async function verifyParent(d1Id, api) {
   const ds = await api.getDataSource(d1Id);
   const db = await api.getDatabase(notion.databaseIdFromDataSource(ds));
   const parent = db.parent?.page_id;
-  if (!parent) throw new Error("D1 is not directly under Control & Automation");
+  if (!parent) throw new Error("D1 is not directly under a POC page");
   const page = await api.getPage(parent);
-  const title = notion.titleValue(Object.values(page.properties || {}).find((p) => p.type === "title"));
-  if (title !== "Control & Automation" || page.in_trash) throw new Error(`Report destination is not the verified Control & Automation page: ${JSON.stringify({ parentId: parent, title, inTrash: Boolean(page.in_trash) })}`);
-  return parent;
+  const pageTitle = (p) => notion.titleValue(Object.values(p.properties || {}).find((v) => v.type === "title")).trim();
+  const title = pageTitle(page);
+  if (page.in_trash || page.public_url) throw new Error("Report parent is trashed or publicly published");
+  if (title === "Control & Automation") return parent;
+  // D1 may be stored directly in the POC root and linked from Control &
+  // Automation. Discover only that root's direct, uniquely named child.
+  if (title === "Secure Timekeeping POC") {
+    const pages = (await api.listAllBlockChildren(parent)).filter((b) => b.type === "child_page");
+    const candidates = pages.filter((b) => b.child_page?.title?.trim() === "Control & Automation");
+    if (candidates.length === 1) {
+      const control = await api.getPage(candidates[0].id);
+      if (norm(control.parent?.page_id) === norm(parent) && pageTitle(control) === "Control & Automation" && !control.in_trash && !control.public_url) return control.id;
+    }
+    throw new Error(`Cannot identify Control & Automation beneath the POC: ${JSON.stringify(pages.map((p) => ({ id: p.id, title: p.child_page.title })))}`);
+  }
+  throw new Error(`Report destination is not the verified Control & Automation page: ${JSON.stringify({ parentId: parent, title })}`);
 }
 async function reportStore(d1Id, api) {
   const parent = await verifyParent(d1Id, api);
