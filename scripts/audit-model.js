@@ -193,7 +193,7 @@ function compareSnapshot(snapshot, config) {
 
 function fingerprint(value) {
   const stable = (v) => Array.isArray(v) ? v.map(stable).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))) :
-    v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().filter((k) => !["url", "public_url", "last_edited_by", "created_by"].includes(k)).map((k) => [k, stable(v[k])])) : v;
+    v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().filter((k) => !["url", "public_url", "last_edited_by", "created_by", "request_id"].includes(k)).map((k) => [k, stable(v[k])])) : v;
   return JSON.stringify(stable(value));
 }
 function compareReads(first, second, config) {
@@ -207,6 +207,7 @@ function compareReads(first, second, config) {
   if (sharedChanged || unstableKeys.size) {
     for (const finding of report.findings) if (finding.severity === "error" && (sharedChanged || unstableKeys.has(finding.workerKey))) finding.severity = "incomplete";
     add(report, "incomplete", "unstable-read", "Data changed between audit reads; repeat the audit before treating discrepancies as confirmed");
+    report.readChanges = { shared: sharedChanged, workerKeys: [...unstableKeys] };
   }
   if (config.upstreamFailure) add(report, "incomplete", "upstream-failure", `Preceding sync did not complete successfully: ${config.upstreamFailure}`);
   return finish(report);

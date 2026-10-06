@@ -254,3 +254,8 @@ test("large findings produce grouped Notion summaries with bounded examples", ()
   report.findings = Array.from({length:10000}, () => structuredClone(report.findings[0]));
   const body = notionMarkdown(report); assert.ok(body.includes("out of 10000")); assert.ok(body.length < 10000);
 });
+test("Notion request IDs are transport metadata, not changing business data", () => {
+  const a = fixture(), b = fixture(); a.schemas = { request_id: "request-one" }; b.schemas = { request_id: "request-two" };
+  a.workers[0].frontend = { request_id: "one", id: id(12) }; b.workers[0].frontend = { request_id: "two", id: id(12) };
+  assert.equal(compareReads(a, b, opts).status, "PASS");
+});
