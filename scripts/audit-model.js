@@ -8,11 +8,14 @@ const { carryoverRowsByYear } = require("./vacation-carryover-record");
 const { parseSnapshot, SNAPSHOT_PROPERTY } = require("./vacation-carryover");
 const { WORK_TYPE_OPTIONS, LEGACY_WORK_TYPE_OPTIONS, ONBOARDING_WORK_TYPE_OPTIONS } = require("./worker-standort-options");
 const EPSILON = 1e-6;
+// The production boundary is permanent, not a rolling historical window.
+const AUDIT_START = "2026-10-01";
 const workTypes = new Set([...WORK_TYPE_OPTIONS, ...LEGACY_WORK_TYPE_OPTIONS, ...ONBOARDING_WORK_TYPE_OPTIONS].map((x) => x.name));
 const text = (row, name) => richTextValue(row?.properties?.[name]).trim();
 const link = (id) => `https://www.notion.so/${norm(id)}`;
 const equalNumber = (a, b) => a === b || (Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= EPSILON);
 const dateOf = (row) => row.properties?.Datum?.date?.start || "";
+const inScope = (row) => !validDate(dateOf(row)) || dateOf(row) >= AUDIT_START;
 const hoursOf = (row) => row.properties?.Stunden?.number ?? null;
 const siteOf = (row) => row.properties?.Standort?.select?.name || "";
 const validDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
@@ -119,8 +122,7 @@ function compareWorker(report, data, d7, cutoff) {
       const id = norm(text(row, "Source Page ID")); expectedIds.add(id);
       if (dateOf(row).slice(0, 7) >= worker.currentMonth) add(report, "error", "archive-month", "D4 ordinary entry is not in a completed month", worker, [row]);
       const matches = bySource.get(id) || [];
-      if (matches.length === 0) add(report, dateOf(row).startsWith("2026-09-") ? "warning" : "error",
-        dateOf(row).startsWith("2026-09-") ? "legacy-coverage" : "archive-missing", "D4 entry has no D7 copy", worker, [row], 1, 0);
+      if (matches.length === 0) add(report, "error", "archive-missing", "D4 entry has no D7 copy", worker, [row], 1, 0);
       else if (matches.length === 1 && !sameValues(row, matches[0])) add(report, "error", "archive-values", "D4 and D7 values differ", worker, [row, matches[0]], values(row), values(matches[0]));
     }
     try {
@@ -130,7 +132,9 @@ function compareWorker(report, data, d7, cutoff) {
         if (snapshot.adjustment === 0 ? Boolean(balance) : !balance || !equalNumber(hoursOf(balance), snapshot.adjustment * 8))
           add(report, "error", "carryover-snapshot", "Urlaubsmitnahme disagrees with its saved calculation", worker, balance ? [balance] : [], snapshot.adjustment * 8, balance ? hoursOf(balance) : null);
         const taken = d4.filter((r) => dateOf(r).startsWith(`${snapshot.year}-`) && siteOf(r) === "Urlaub").reduce((sum, r) => sum + (hoursOf(r) ?? 0) / 8, 0);
-        if (!equalNumber(taken, snapshot.taken)) add(report, "error", "carryover-history", "Vacation history changed relative to the carryover calculation", worker, [], snapshot.taken, taken);
+        if (`${snapshot.year}-01-01` >= AUDIT_START) {
+          if (!equalNumber(taken, snapshot.taken)) add(report, "error", "carryover-history", "Vacation history changed relative to the carryover calculation", worker, [], snapshot.taken, taken);
+        } else add(report, "info", "carryover-baseline", "Saved balance is checked; its source-year vacation total includes manually migrated history outside audit coverage", worker);
       }
     } catch (error) { add(report, "error", "carryover-snapshot", error.message, worker); }
     report.totals.push({ workerKey: worker.workerKey, worker: worker.name, database: "D4", groups: aggregates(d4) });
@@ -149,9 +153,14 @@ function compareWorker(report, data, d7, cutoff) {
 }
 
 function compareSnapshot(snapshot, config) {
+  const allD7 = snapshot.d7;
+  snapshot = scopedSnapshot(snapshot);
   const report = { version: 1, scope: config.scope, runId: config.runId, startedAt: config.startedAt, runUrl: config.runUrl || "",
     findings: [...snapshot.findings], totals: [], coverage: { workers: snapshot.workers.length, checkedWorkers: 0, d3Rows: 0, d4Rows: 0,
-      d7Rows: snapshot.d7.length, sites: snapshot.sites.length, history: config.scope === "full" ? "checked" : "not checked", locationTotals: config.scope === "full" ? "checked" : "not checked" } };
+      d7Rows: snapshot.d7.length, sites: snapshot.sites.length, startDate: AUDIT_START,
+      history: config.scope === "full" ? "checked from 2026-10-01" : "not checked",
+      locationTotals: config.scope === "full" ? "production entries from 2026-10-01" : "not checked",
+      legacyHistory: "excluded through 2026-09-30", allTimeRollups: "not certified when they include pre-production records" } };
   const { d7, sites } = snapshot;
   duplicates(report, d7, (r) => norm(text(r, "Source Page ID")), "D7 Source Page ID");
   duplicates(report, d7, (r) => text(r, "Sync Key"), "D7 Sync Key");
@@ -181,14 +190,27 @@ function compareSnapshot(snapshot, config) {
   if (config.scope === "full") for (const site of sites) {
     const expectedRows = d7.filter((r) => siteIndex.get(siteOf(r))?.id === site.id);
     const expectedHours = expectedRows.reduce((sum, r) => sum + (hoursOf(r) ?? 0), 0);
-    const actualHours = site.properties?.["Gearbeitete Stunden"]?.rollup?.number;
-    const actualIds = (site.properties?.["Arbeitszeiten (D7)"]?.relation || []).map((r) => norm(r.id)).sort();
+    const allById = new Map(allD7.map((r) => [norm(r.id), r]));
+    const relationIds = (site.properties?.["Arbeitszeiten (D7)"]?.relation || []).map((r) => norm(r.id));
+    const missing = relationIds.filter((id) => !allById.has(id));
+    if (missing.length) add(report, "incomplete", "location-coverage", "D8 links to inaccessible D7 records whose audit scope cannot be established", null, [site], 0, missing.length);
+    const actualIds = relationIds.filter((id) => allById.has(id) && inScope(allById.get(id))).sort();
+    const hasLegacy = relationIds.some((id) => allById.has(id) && !inScope(allById.get(id)));
+    const actualHours = actualIds.reduce((sum, id) => sum + (hoursOf(allById.get(id)) ?? 0), 0);
     const expectedIds = expectedRows.map((r) => norm(r.id)).sort();
     if (JSON.stringify(actualIds) !== JSON.stringify(expectedIds)) add(report, "error", "location-membership", "D8 relation membership differs from D7 Standort assignments", null, [site], expectedIds, actualIds);
     if (!equalNumber(expectedHours, actualHours)) add(report, "error", "location-total", "D8 hours differ from independently summed D7 hours", null, [site], expectedHours, actualHours ?? null);
-    report.totals.push({ database: "D8", standort: titleValue(site.properties?.Standort), expectedHours, actualHours: actualHours ?? null, rows: expectedRows.length });
+    if (!hasLegacy && !missing.length && !equalNumber(expectedHours, site.properties?.["Gearbeitete Stunden"]?.rollup?.number))
+      add(report, "error", "location-total", "Production-only D8 rollup differs from D7 hours", null, [site], expectedHours, site.properties?.["Gearbeitete Stunden"]?.rollup?.number ?? null);
+    report.totals.push({ database: "D8", standort: titleValue(site.properties?.Standort), expectedHours, actualHours, rows: expectedRows.length,
+      rollup: hasLegacy ? "excluded: includes pre-production history" : "checked" });
   }
   return finish(report);
+}
+
+function scopedSnapshot(snapshot) {
+  return { ...snapshot, d7: snapshot.d7.filter(inScope),
+    workers: snapshot.workers.map((data) => ({ ...data, d3: data.d3.filter(inScope), d4: data.d4.filter(inScope) })) };
 }
 
 function fingerprint(value) {
@@ -198,6 +220,22 @@ function fingerprint(value) {
 }
 function compareReads(first, second, config) {
   const report = compareSnapshot(second, config);
+  // Pre-production edits are outside the audit, including changes to mixed
+  // all-time rollups. Keep scoped relation membership in the stability check.
+  const stabilityScope = (snapshot) => {
+    const scoped = scopedSnapshot(snapshot);
+    const legacy = new Set(snapshot.d7.filter((r) => !inScope(r)).map((r) => norm(r.id)));
+    scoped.sites = snapshot.sites.map((site) => {
+      const relation = site.properties?.["Arbeitszeiten (D7)"];
+      if (!relation?.relation?.some((r) => legacy.has(norm(r.id)))) return site;
+      const props = { ...site.properties, "Arbeitszeiten (D7)": { ...relation, relation: relation.relation.filter((r) => !legacy.has(norm(r.id))) } };
+      delete props["Gearbeitete Stunden"];
+      const { last_edited_time, ...stable } = site;
+      return { ...stable, properties: props };
+    });
+    return scoped;
+  };
+  first = stabilityScope(first); second = stabilityScope(second);
   const unstableKeys = new Set();
   for (const data of second.workers) {
     const previous = first.workers.find((w) => w.worker.rowId === data.worker.rowId);
@@ -212,4 +250,4 @@ function compareReads(first, second, config) {
   if (config.upstreamFailure) add(report, "incomplete", "upstream-failure", `Preceding sync did not complete successfully: ${config.upstreamFailure}`);
   return finish(report);
 }
-module.exports = { EPSILON, text, link, equalNumber, add, finish, values, aggregates, compareSnapshot, compareReads, fingerprint };
+module.exports = { AUDIT_START, inScope, EPSILON, text, link, equalNumber, add, finish, values, aggregates, compareSnapshot, compareReads, fingerprint };

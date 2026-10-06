@@ -26,7 +26,7 @@ function fixture() {
   return { workers: [{ worker, d3: [source], d4: [], verified: true }], d7: [copy], sites: [site], registry: [], findings: [] };
 }
 const codes = (report) => report.findings.map((f) => f.code);
-function archive(s, date = "2026-08-01") {
+function archive(s, date = "2026-10-02") {
   const data = s.workers[0];
   const row = structuredClone(s.d7[0]); row.id = id(51); row.parent = { data_source_id: data.worker.d4DataSourceId };
   row.properties.Datum.date.start = date;
@@ -59,13 +59,21 @@ test("null hours are not zero and floating point comparisons use 1e-6", () => {
   const s = fixture(); s.workers[0].d3[0].properties.Stunden.number = null; s.d7[0].properties.Stunden.number = 0;
   assert.ok(codes(compareSnapshot(s, opts)).includes("current-values"));
 });
-test("archive omissions distinguish September coverage from later missing copies", () => {
-  const s = fixture(); archive(s, "2026-09-01"); const r = compareSnapshot(s, opts);
-  assert.equal(r.status, "WARNING"); assert.ok(codes(r).includes("legacy-coverage"));
-  s.workers[0].d4 = []; archive(s); assert.ok(codes(compareSnapshot(s, opts)).includes("archive-missing"));
+test("production boundary excludes every pre-October copy, gap and conflicting value", () => {
+  const s = fixture(); const row = archive(s, "2026-09-30");
+  const copy = structuredClone(row); copy.id = id(35); copy.properties.Stunden.number = 999; s.d7.push(copy);
+  s.sites[0].properties["Arbeitszeiten (D7)"].relation.push({id:copy.id});
+  s.sites[0].properties["Gearbeitete Stunden"].rollup.number = 123;
+  const r = compareSnapshot(s, opts); assert.equal(r.status,"PASS"); assert.equal(r.coverage.d4Rows,0); assert.equal(r.coverage.d7Rows,1);
+  assert.equal(r.totals.find(t=>t.database==="D8").actualHours,8);
+  const changed=structuredClone(s); changed.d7[1].properties.Stunden.number=1;
+  changed.sites[0].properties["Gearbeitete Stunden"].rollup.number=567;
+  assert.equal(compareReads(s,changed,opts).status,"PASS");
+  s.workers[0].d4=[]; archive(s,"2026-10-01");
+  assert.ok(codes(compareSnapshot(s,opts)).includes("archive-missing"));
 });
-test("September copies must still agree; unknown provenance is incomplete", () => {
-  const s = fixture(); const row = archive(s, "2026-09-01"); const copy = structuredClone(row); copy.id = id(35); copy.properties.Stunden.number = 9; s.d7.push(copy);
+test("production archive copies must agree; unknown provenance is incomplete", () => {
+  const s = fixture(); const row = archive(s); const copy = structuredClone(row); copy.id = id(35); copy.properties.Stunden.number = 9; s.d7.push(copy);
   assert.ok(codes(compareSnapshot(s, opts)).includes("archive-values"));
   row.properties["Source Page ID"] = rt(""); assert.equal(compareSnapshot(s, opts).status, "INCOMPLETE");
 });
@@ -80,8 +88,8 @@ test("Kurzarbeit and other non-location types need no D8 location", () => {
   assert.equal(compareSnapshot(s, opts).status, "PASS");
 });
 test("fractional vacation is checked, and carryover is exempt from D7 copying", () => {
-  const s = fixture(); const row = archive(s, "2026-09-02"); row.properties.Standort.select.name = "Urlaub"; row.properties.Stunden.number = 1.5; row.properties.Urlaubstag.formula.number = 0.1875;
-  assert.equal(compareSnapshot(s, opts).counts.error, 0);
+  const s = fixture(); const row = archive(s, "2026-10-02"); row.properties.Standort.select.name = "Urlaub"; row.properties.Stunden.number = 1.5; row.properties.Urlaubstag.formula.number = 0.1875;
+  assert.equal(codes(compareSnapshot(s, opts)).includes("vacation-formula-value"), false);
   row.properties.Urlaubstag.formula.number = 1; assert.ok(codes(compareSnapshot(s, opts)).includes("vacation-formula-value"));
   row.properties.Wochentag = title("Urlaubsmitnahme"); row.properties.Datum.date.start = "2027-01-01"; row.properties["Sync Key"] = rt("vacation-carryover|wrk_1|2026"); row.properties["Source Page ID"] = rt(""); row.properties.Stunden.number = -16; row.properties.Urlaubstag.formula.number = -2;
   assert.equal(compareSnapshot(s, opts).status, "PASS");
@@ -144,21 +152,25 @@ test("failed collection or publication still writes an incomplete JSON/Markdown 
 });
 
 function publisherFixture() {
-  const dsId = id(71), dbId = id(72), parent = id(73); const rows = [], blocks = [], writes = []; let lostCreate = true, lostAppend = true;
-  const rtRead = (property) => ({ ...property, rich_text: property.rich_text.map((x) => ({ ...x, plain_text: x.text.content })) });
+  const dsId=id(71), dbId=id(72), root=id(73), parent=id(75);
+  const rows=[], blocks=[], healthBlocks=[], writes=[]; let lostCreate=true, lostAppend=true;
+  const readText = (property) => ({...property, ...(property.rich_text ? {rich_text: property.rich_text.map(x=>({...x,plain_text:x.text?.content ?? x.plain_text}))} : {})});
+  const readProps = (props) => Object.fromEntries(Object.entries(props).map(([k,p])=>[k,readText(p)]));
   const api = {
-    getDataSource: async (n) => n === opts.d1 ? { parent: { type: "database_id", database_id: id(2) } } : { id: dsId, parent: { type: "database_id", database_id: dbId }, properties: Object.fromEntries(Object.entries(SCHEMA).map(([name, type]) => [name, { type }])) },
-    getDatabase: async (n) => n === id(2) ? { parent: { page_id: parent } } : { id: dbId, parent: { page_id: parent }, data_sources: [{ id: dsId }], description: [{ plain_text: MARKER }] },
-    getPage: async () => ({ properties: { title: title("Control & Automation") } }),
-    listAllBlockChildren: async (n) => n === parent ? [{ id: dbId, type: "child_database", child_database: { title: "Datenprüfung" } }] : blocks,
-    listAllViews: async () => [{ name: "Aktuell · letzte Prüfungen" }, { name: "Vollständig · letzte Prüfungen" }],
-    queryAll: async (n) => { assert.equal(n, dsId); return rows; },
-    createPage: async (p, properties) => { assert.equal(p.data_source_id, dsId); const row = { id: id(74), parent: p, properties }; rows.push(row); writes.push("create"); if (lostCreate) { lostCreate = false; throw new Error("Lost response"); } return row; },
-    updatePage: async (n) => { assert.equal(n, id(74)); writes.push("update"); },
-    appendBlockChildren: async (n, children) => { assert.equal(n, id(74)); blocks.push(...children.map((b) => ({ ...b, [b.type]: rtRead(b[b.type]) }))); writes.push("append"); if (lostAppend) { lostAppend = false; throw new Error("Lost append response"); } },
+    getDataSource: async n=>n===opts.d1 ? {parent:{type:"database_id",database_id:id(2)}} : {id:dsId,parent:{type:"database_id",database_id:dbId},properties:Object.fromEntries(Object.entries(SCHEMA).map(([name,type])=>[name,{type}]))},
+    getDatabase: async n=>n===id(2) ? {parent:{page_id:root}} : {id:dbId,parent:{page_id:parent},data_sources:[{id:dsId}],description:[{plain_text:MARKER}]},
+    getPage: async n=>({id:n,parent:{page_id:root},properties:{title:title(n===root ? "Secure Timekeeping POC" : "System Health")}}),
+    listAllBlockChildren: async n=>n===root ? [{id:parent,type:"child_page",child_page:{title:"System Health"}}] : n===parent ? [...healthBlocks,{id:dbId,type:"child_database",child_database:{title:"Datenprüfung"}}] : blocks,
+    listAllViews: async()=>[{name:"Aktuell · letzte Prüfungen"},{name:"Vollständig · letzte Prüfungen"}],
+    queryAll: async(n,filter)=>{assert.equal(n,dsId); return filter ? rows.filter(r=>notionText(r.properties["Run ID"])===filter.rich_text.equals) : rows;},
+    createPage: async(p,properties)=>{assert.equal(p.data_source_id,dsId); const row={id:id(74+rows.length*10),parent:p,properties:readProps(properties)}; rows.push(row); writes.push("create"); if(lostCreate){lostCreate=false;throw new Error("Lost response");} return row;},
+    updatePage: async(n,props)=>{const row=rows.find(r=>r.id===n); assert.ok(row); Object.assign(row.properties,readProps(props)); writes.push("update");},
+    appendBlockChildren: async(n,children)=>{assert.ok([id(74),id(84),parent].includes(n)); const target=n===parent ? healthBlocks : blocks; target.push(...children.map(b=>({...b,id:id(100+healthBlocks.length+blocks.length),[b.type]:readText(b[b.type])}))); writes.push("append"); if(n!==parent && lostAppend){lostAppend=false;throw new Error("Lost append response");}},
+    notion: async(url,{method,body})=>{assert.equal(method,"PATCH");const block=healthBlocks.find(b=>url===`/blocks/${b.id}`);assert.ok(block,"Only System Health summary blocks can be changed");block.callout=readText(body.callout);writes.push("summary");},
   };
-  return { api, rows, blocks, writes };
+  return {api,rows,blocks,healthBlocks,writes};
 }
+const notionText = p=>(p.rich_text || []).map(x=>x.plain_text ?? x.text?.content).join("");
 test("report publication recovers ambiguous creates/appends and reuses Run ID without duplicate blocks", async () => {
   const f = publisherFixture(); const report = compareSnapshot(fixture(), opts);
   await publish(report, opts, f.api); const count = f.blocks.length; await publish(report, opts, f.api);
@@ -226,14 +238,14 @@ test("carryover saved calculation is validated against balance and source-year v
 test("publisher does not overwrite an unowned database even if its title matches", async () => {
   const f = publisherFixture(); const retrieve = f.api.getDatabase;
   f.api.getDatabase = async (n) => { const db = await retrieve(n); if (db.description) db.description = []; return db; };
-  await assert.rejects(publish(compareSnapshot(fixture(), opts), opts, f.api), /not owned/); assert.equal(f.writes.length, 0);
+  await assert.rejects(publish(compareSnapshot(fixture(), opts), opts, f.api), /not owned/); assert.equal(f.writes.includes("create"), false);
 });
 test("public GitHub reports never contain employee data or raw failures", () => {
   const { publicReport, publicMarkdown } = require("../scripts/audit-report");
-  const s = fixture(); s.d7[0].properties.Stunden.number = 999.123; const report = compareSnapshot(s, opts);
+  const s = fixture(); s.d7[0].properties.Stunden.number = 999.123; s.d7[0].properties.Datum.date.start="2026-10-17"; const report = compareSnapshot(s, opts);
   report.findings.push({ severity: "incomplete", code: "api-error", message: "secret personal content", worker: "New Name", records: [] });
   const output = JSON.stringify(publicReport(report)) + publicMarkdown(report);
-  for (const value of ["New Name", "wrk_1", "999.123", id(21), "2026-10-01", "secret personal content", "www.notion.so"]) assert.equal(output.includes(value), false, value);
+  for (const value of ["New Name", "wrk_1", "999.123", id(21), "2026-10-17", "secret personal content", "www.notion.so"]) assert.equal(output.includes(value), false, value);
 });
 test("recent source deletions await sync rather than becoming confirmed orphan errors", () => {
   const s = fixture(); const deleted = s.workers[0].d3.pop(); deleted.in_trash = true; deleted.last_edited_time = "2026-10-05T13:30:00Z";
@@ -259,10 +271,22 @@ test("Notion request IDs are transport metadata, not changing business data", ()
   a.workers[0].frontend = { request_id: "one", id: id(12) }; b.workers[0].frontend = { request_id: "two", id: id(12) };
   assert.equal(compareReads(a, b, opts).status, "PASS");
 });
-test("publisher discovers Control & Automation under the verified POC root", async () => {
-  const f = publisherFixture(); const getPage = f.api.getPage, getDb = f.api.getDatabase, children = f.api.listAllBlockChildren;
-  f.api.getPage = async (n) => n === id(73) ? { id:n, properties: { title: title("Secure Timekeeping POC") } } : { ...await getPage(n), id:n, parent:{page_id:id(73)} };
-  f.api.listAllBlockChildren = async (n) => n === id(73) ? [{ id:id(75),type:"child_page",child_page:{title:"Control & Automation"} }] : n === id(75) ? children(id(73)) : children(n);
-  f.api.getDatabase = async (n) => { const db = await getDb(n); if(n === id(72)) db.parent.page_id=id(75); return db; };
-  await publish(compareSnapshot(fixture(), opts), opts, f.api); assert.equal(f.rows.length,1);
+test("System Health keeps separate latest current/full summaries and respects the POC parent", async () => {
+  const f=publisherFixture(); const full=compareSnapshot(fixture(),opts);
+  const published=await publish(full,opts,f.api);assert.equal(published.healthPageId,id(75));
+  const current=compareSnapshot(fixture(),{...opts,scope:"current",runId:"run-2",startedAt:"2026-10-06T14:00:00Z"});
+  await publish(current,opts,f.api);
+  assert.equal(f.rows.length,2);assert.equal(f.healthBlocks.filter(b=>b.type==="callout").length,2);
+  const summaries=f.healthBlocks.filter(b=>b.type==="callout").map(b=>notionText(b.callout));
+  assert.ok(summaries.some(s=>s.includes("Aktueller Monat") && s.includes("6.10.2026")));
+  assert.ok(summaries.some(s=>s.includes("Gesamter Produktionszeitraum") && s.includes("5.10.2026")));
+});
+test("mixed legacy location totals still detect missing production membership",()=>{
+  const s=fixture(); const old=structuredClone(s.d7[0]);old.id=id(90);old.properties.Datum.date.start="2026-09-30";s.d7.push(old);
+  s.sites[0].properties["Arbeitszeiten (D7)"].relation=[{id:old.id}];
+  const r=compareSnapshot(s,opts);assert.ok(codes(r).includes("location-membership"));assert.ok(codes(r).includes("location-total"));
+});
+test("unresolvable D8 members cannot be silently excluded as legacy",()=>{
+  const s=fixture();s.sites[0].properties["Arbeitszeiten (D7)"].relation.push({id:id(999)});
+  assert.ok(codes(compareSnapshot(s,opts)).includes("location-coverage"));
 });

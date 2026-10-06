@@ -8,14 +8,14 @@ const SCHEMA = { Prüfung: "title", Zeitpunkt: "date", Umfang: "select", Status:
 const safe = (value) => String(value ?? "").replace(/[\r\n|]/g, " ").replace(/[<>]/g, "").replace(/([\\`*_[\]])/g, "\\$1");
 function coverageText(report) {
   const c = report.coverage || {};
-  return `${c.checkedWorkers || 0}/${c.workers || 0} workers; D3 ${c.d3Rows || 0}, D4 ${c.d4Rows || 0}, D7 ${c.d7Rows || 0} rows. History: ${c.history || "not checked"}; location totals: ${c.locationTotals || "not checked"}. ${report.counts.incomplete} incomplete checks.`;
+  return `Ab 01.10.2026 · ${c.checkedWorkers || 0}/${c.workers || 0} Mitarbeitende · D3: ${c.d3Rows || 0}, D4: ${c.d4Rows || 0}, D7: ${c.d7Rows || 0} Einträge. ${report.scope === "full" ? "Produktionshistorie und Standort-Summen geprüft." : "Aktueller Monat; Historie und Standort-Summen nicht geprüft."} ${report.counts.incomplete} unvollständige Prüfungen.`;
 }
 function markdown(report) {
   return [`# Datenprüfung · ${report.scope} · ${report.status}`, "", `Checked: ${report.startedAt}`, "", coverageText(report), "",
     `Errors: ${report.counts.error} · Warnings: ${report.counts.warning} · Incomplete: ${report.counts.incomplete}`, "",
     "## Findings", "", ...(report.findings.length ? report.findings.map((f) =>
       `- **${f.severity.toUpperCase()}** ${safe(f.worker)} ${safe(f.date)} — ${safe(f.message)}${f.expected !== undefined ? `; expected ${safe(JSON.stringify(f.expected))}, actual ${safe(JSON.stringify(f.actual))}` : ""} ${f.records.map((r, i) => `[record ${i + 1}](${r.url})`).join(" ")}`) : ["All checks in this scope passed."]), "",
-    "## Totals", "", ...report.totals.map((t) => `- ${safe(t.database)} ${safe(t.worker || t.standort || "")}: ${safe(JSON.stringify(t.groups || { rows: t.rows, expectedHours: t.expectedHours, actualHours: t.actualHours }))}`), "",
+    "## Totals", "", ...report.totals.map((t) => `- ${safe(t.database)} ${safe(t.worker || t.standort || "")}: ${safe(JSON.stringify(t.groups || { rows: t.rows, expectedHours: t.expectedHours, actualHours: t.actualHours, allTimeRollup: t.rollup }))}`), "",
     "This audit compares stored records. Matching copies do not independently prove the hours worked. Current-scope results do not cover historical totals.", ""].join("\n");
 }
 function notionMarkdown(report) {
@@ -62,31 +62,63 @@ function properties() {
     Status: { select: { options: [{ name: "OK", color: "green" }, { name: "Hinweise", color: "yellow" }, { name: "Fehler", color: "red" }, { name: "Unvollständig", color: "orange" }] } },
     Abdeckung: { rich_text: {} }, Fehler: { number: {} }, Hinweise: { number: {} }, "Nicht geprüft": { number: {} }, "GitHub Run": { url: {} }, "Run ID": { rich_text: {} } };
 }
+const HEALTH_TITLE = "System Health";
+const OVERVIEW_LABELS = { current: "Aktueller Monat", full: "Gesamter Produktionszeitraum" };
+const pageTitle = (page) => notion.titleValue(Object.values(page.properties || {}).find((v) => v.type === "title")).trim();
+const healthyParent = (page) => { if (page.in_trash || page.archived || page.public_url) throw new Error("Report parent is trashed or publicly published"); return page; };
 async function verifyParent(d1Id, api) {
   const ds = await api.getDataSource(d1Id);
   const db = await api.getDatabase(notion.databaseIdFromDataSource(ds));
-  const parent = db.parent?.page_id;
-  if (!parent) throw new Error("D1 is not directly under a POC page");
-  const page = await api.getPage(parent);
-  const pageTitle = (p) => notion.titleValue(Object.values(p.properties || {}).find((v) => v.type === "title")).trim();
-  const title = pageTitle(page);
-  if (page.in_trash || page.public_url) throw new Error("Report parent is trashed or publicly published");
-  if (title === "Control & Automation") return parent;
-  // D1 may be stored directly in the POC root and linked from Control &
-  // Automation. Discover only that root's direct, uniquely named child.
-  if (title === "Secure Timekeeping POC") {
-    const pages = (await api.listAllBlockChildren(parent)).filter((b) => b.type === "child_page");
-    const candidates = pages.filter((b) => b.child_page?.title?.trim() === "Control & Automation");
-    if (candidates.length === 1) {
-      const control = await api.getPage(candidates[0].id);
-      if (norm(control.parent?.page_id) === norm(parent) && pageTitle(control) === "Control & Automation" && !control.in_trash && !control.public_url) return control.id;
-    }
-    throw new Error(`Cannot identify Control & Automation beneath the POC: ${JSON.stringify(pages.map((p) => ({ id: p.id, title: p.child_page.title })))}`);
+  let root = healthyParent(await api.getPage(db.parent?.page_id));
+  if (pageTitle(root) === "Control & Automation" && root.parent?.page_id) root = healthyParent(await api.getPage(root.parent.page_id));
+  if (pageTitle(root) !== "Secure Timekeeping POC" || !root.id) throw new Error("Report destination is not the verified Secure Timekeeping POC page");
+  const locate = async () => {
+    const matches = (await api.listAllBlockChildren(root.id)).filter((b) => b.type === "child_page" && b.child_page.title === HEALTH_TITLE);
+    if (matches.length > 1) throw new Error("Multiple System Health pages beneath the POC");
+    return matches.length ? api.getPage(matches[0].id) : null;
+  };
+  let health = await locate();
+  if (!health) {
+    try { health = await api.createPage({ type: "page_id", page_id: root.id }, { title: notion.title(HEALTH_TITLE) }, { icon: { type: "emoji", emoji: "🩺" } }); }
+    catch (error) { health = await locate(); if (!health) throw error; }
   }
-  throw new Error(`Report destination is not the verified Control & Automation page: ${JSON.stringify({ parentId: parent, title })}`);
+  healthyParent(health);
+  if (norm(health.parent?.page_id) !== norm(root.id) || pageTitle(health) !== HEALTH_TITLE) throw new Error("System Health is outside its verified POC parent");
+  return health.id;
+}
+async function ensureOverview(parent, api) {
+  // Managed labels identify only our own blocks; user-added content is preserved.
+  const intro = "Prüfzeitraum: ab 01.10.2026. Manuell migrierte Daten bis 30.09.2026 sind ausgeschlossen. Die Prüfung liest Geschäftsdaten und repariert nichts. Tagesprüfung und vollständige Prüfung werden getrennt angezeigt.";
+  const existing = await api.listAllBlockChildren(parent);
+  const blocks = [
+    { object: "block", type: "paragraph", paragraph: { rich_text: rich(intro) } },
+    ...Object.values(OVERVIEW_LABELS).map((label) => ({ object: "block", type: "callout", callout: { icon: { type: "emoji", emoji: "⏳" }, rich_text: rich(`${label}\nNoch keine veröffentlichte Prüfung.`) } })),
+  ];
+  for (const block of blocks) {
+    const prefix = block.type === "callout" ? block.callout.rich_text[0].text.content.split("\n")[0] : "Prüfzeitraum: ab 01.10.2026.";
+    if (existing.some((b) => b.type === block.type && notion.plainText(b[b.type]?.rich_text).startsWith(prefix))) continue;
+    try { await api.appendBlockChildren(parent, [block]); }
+    catch (error) { if (!(await api.listAllBlockChildren(parent)).some((b) => b.type === block.type && notion.plainText(b[b.type]?.rich_text).startsWith(prefix))) throw error; }
+  }
+}
+async function updateOverview(parent, dsId, api) {
+  const rows = await api.queryAll(dsId);
+  const blocks = await api.listAllBlockChildren(parent);
+  for (const [scope, label] of Object.entries(OVERVIEW_LABELS)) {
+    const latest = rows.filter((r) => r.properties.Umfang?.select?.name === scope)
+      .sort((a, b) => (b.properties.Zeitpunkt?.date?.start || "").localeCompare(a.properties.Zeitpunkt?.date?.start || ""))[0];
+    if (!latest) continue;
+    const targets = blocks.filter((b) => b.type === "callout" && notion.plainText(b.callout.rich_text).startsWith(`${label}\n`));
+    if (targets.length !== 1) throw new Error(`Ambiguous System Health summary: ${label}`);
+    const p = latest.properties, status = p.Status.select.name;
+    const when = new Date(p.Zeitpunkt.date.start).toLocaleString("de-DE", { timeZone: "Europe/Berlin" });
+    const content = `${label}\n${status} · ${when} (Berlin)\n${p.Fehler.number} Fehler · ${p.Hinweise.number} Hinweise · ${p["Nicht geprüft"].number} unvollständig\n${notion.richTextValue(p.Abdeckung)}\n`;
+    await api.notion(`/blocks/${targets[0].id}`, { method: "PATCH", body: { callout: { icon: { type: "emoji", emoji: status === "OK" ? "✅" : status === "Hinweise" ? "🟡" : "🔴" }, rich_text: [...rich(content), { type: "text", text: { content: "Bericht öffnen", link: { url: latest.url || `https://www.notion.so/${norm(latest.id)}` } } }] } } });
+  }
 }
 async function reportStore(d1Id, api) {
   const parent = await verifyParent(d1Id, api);
+  await ensureOverview(parent, api);
   async function locate() {
     const children = await api.listAllBlockChildren(parent);
     const candidates = children.filter((b) => b.type === "child_database" && b.child_database?.title === TITLE);
@@ -112,12 +144,12 @@ async function reportStore(d1Id, api) {
       catch (error) { if (!(await api.listAllViews(db.id)).some((v) => v.name === name)) throw error; }
     }
   }
-  return { db, ds };
+  return { db, ds, parent };
 }
 // All writes below are confined to the newly verified report store and rows
 // found there by Run ID. Business database IDs are never write destinations.
 async function publish(report, config, api = notion) {
-  const { db, ds } = await reportStore(config.d1, api);
+  const { db, ds, parent } = await reportStore(config.d1, api);
   const lookup = () => api.queryAll(ds.id, { property: "Run ID", rich_text: { equals: report.runId } });
   let matches = await lookup();
   if (matches.length > 1) throw new Error("Duplicate audit Run ID in report store");
@@ -162,6 +194,7 @@ async function publish(report, config, api = notion) {
     }
   }
   await api.updatePage(page.id, { Status: notion.select(STATUS[report.status]) });
-  return { pageId: page.id, databaseId: db.id, url: page.url || `https://www.notion.so/${norm(page.id)}` };
+  await updateOverview(parent, ds.id, api);
+  return { healthPageId: parent, healthUrl: `https://www.notion.so/${norm(parent)}`, pageId: page.id, databaseId: db.id, url: page.url || `https://www.notion.so/${norm(page.id)}` };
 }
 module.exports = { SCHEMA, MARKER, coverageText, markdown, notionMarkdown, publicReport, publicMarkdown, reportStore, publish };

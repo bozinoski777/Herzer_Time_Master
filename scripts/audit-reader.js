@@ -5,7 +5,7 @@ const { assertFrontendIdentity, normalizeNotionId: norm } = require("./worker-id
 const { assertDayDataSource, assertArchiveDataSource, assertVacationDayFormula } = require("./day-schemas");
 const { D7_SCHEMA } = require("./management-sync");
 const canonicalPropertyId = (value) => { try { return decodeURIComponent(String(value || "")); } catch { return String(value || ""); } };
-const { text, add } = require("./audit-model");
+const { text, add, AUDIT_START, inScope } = require("./audit-model");
 
 // Explicit transport allowlist. Even an accidental writer call cannot modify
 // a business record through the collector's API.
@@ -115,8 +115,10 @@ async function collect(config, api = readOnlyApi()) {
         if (role === "d4" && config.scope === "full") assertVacationDayFormula(ds);
       }
       if (text(worker.row, "Rollover Manifest") || ["Running", "Error"].includes(worker.row.properties?.["Rollover Status"]?.select?.name)) throw new Error("Worker has an unresolved rollover checkpoint or error");
-      data.d3 = await api.queryAll(worker.d3DataSourceId);
-      if (config.scope === "full") data.d4 = await api.queryAll(worker.d4DataSourceId);
+      data.d3 = (await api.queryAll(worker.d3DataSourceId)).filter(inScope);
+      if (config.scope === "full") data.d4 = (await api.queryAll(worker.d4DataSourceId, { or: [
+        { property: "Datum", date: { on_or_after: AUDIT_START } }, { property: "Datum", date: { is_empty: true } },
+      ] })).filter(inScope);
       for (const role of ["d3", "d4"]) for (const row of data[role]) assertPageBelongsToWorkerRoute(row, worker, role);
       data.verified = true;
     } catch (error) { failure("worker-access-or-state", error, worker); }
