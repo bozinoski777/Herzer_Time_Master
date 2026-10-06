@@ -12,12 +12,12 @@ on:
   workflow_dispatch:
     inputs:
       scope:
-        description: Audit current entries or all history
+        description: Audit current entries or production history from October 2026
         type: choice
         options: [current, full]
         default: current
       publish_notion:
-        description: Publish to the private Datenprüfung report database
+        description: Publish to Datenprüfung inside System Health
         type: boolean
         default: false
 

@@ -290,3 +290,29 @@ test("unresolvable D8 members cannot be silently excluded as legacy",()=>{
   const s=fixture();s.sites[0].properties["Arbeitszeiten (D7)"].relation.push({id:id(999)});
   assert.ok(codes(compareSnapshot(s,opts)).includes("location-coverage"));
 });
+
+test("System Health creation recovers a lost response without duplicating the page",async()=>{
+  const f=publisherFixture();const children=f.api.listAllBlockChildren,create=f.api.createPage;
+  let created=false,creates=0;
+  f.api.listAllBlockChildren=async n=>n===id(73) && !created ? [] : children(n);
+  f.api.createPage=async(parent,props,extra)=>{
+    if(parent.page_id){assert.equal(parent.page_id,id(73));assert.equal(props.title.title[0].text.content,"System Health");assert.equal(extra.icon.type,"emoji");created=true;creates++;throw new Error("Lost page response");}
+    return create(parent,props,extra);
+  };
+  await publish(compareSnapshot(fixture(),opts),opts,f.api);
+  await publish(compareSnapshot(fixture(),opts),opts,f.api);
+  assert.equal(creates,1);
+});
+test("publication refuses a publicly published POC before any writes",async()=>{
+  const f=publisherFixture(),get=f.api.getPage;
+  f.api.getPage=async n=>({...await get(n),public_url:"https://public.example"});
+  await assert.rejects(publish(compareSnapshot(fixture(),opts),opts,f.api),/publicly/);assert.equal(f.writes.length,0);
+});
+test("completed production-month history remains checked in future months",()=>{
+  const s=fixture(),row=archive(s,"2026-10-02");
+  s.workers[0].worker.currentMonth="2026-11";s.workers[0].d3=[];
+  const copy=structuredClone(row);copy.id=id(99);copy.properties["Source Database ID"]=rt(s.workers[0].worker.d4DatabaseId);s.d7=[copy];
+  s.sites[0].properties["Arbeitszeiten (D7)"].relation=[{id:copy.id}];
+  const r=compareSnapshot(s,{...opts,currentMonth:"2026-11"});assert.equal(r.status,"PASS");assert.equal(r.coverage.d4Rows,1);
+  s.d7=[];assert.ok(codes(compareSnapshot(s,{...opts,currentMonth:"2027-03"})).includes("archive-missing"));
+});
