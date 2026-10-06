@@ -60,7 +60,7 @@ function aggregates(rows) {
 function checkIdentity(report, row, worker, role) {
   const source = text(row, "Source Page ID");
   const parsed = parseDaySyncKey(text(row, "Sync Key"), worker.workerKey);
-  if (!source || !parsed || !parsed.sourcePageId) {
+  if (!/^[a-f0-9]{32}$/.test(norm(source)) || !parsed || !parsed.sourcePageId) {
     add(report, "incomplete", "provenance", `${role}: source identity cannot be verified`, worker, [row]); return false;
   }
   if (parsed.date !== dateOf(row) || norm(parsed.sourcePageId) !== norm(source))
@@ -139,7 +139,9 @@ function compareWorker(report, data, d7, cutoff) {
     if (text(row, "Sync Key").startsWith("vacation-carryover|")) add(report, "error", "carryover-in-d7", "Vacation carryover must not be a D7 work entry", worker, [row]);
     const id = norm(text(row, "Source Page ID"));
     if (!id || expectedIds.has(id)) continue;
-    if (report.scope === "full" || dateOf(row).slice(0, 7) === worker.currentMonth || currentIds.has(id))
+    const absent = (data.absentSources || []).find((source) => norm(source.id) === id);
+    if (absent && fresh(absent, cutoff)) add(report, "warning", "awaiting-sync", "D3 source changed or was deleted after the preceding sync; awaiting next sync", worker, [absent, row]);
+    else if (report.scope === "full" || dateOf(row).slice(0, 7) === worker.currentMonth || currentIds.has(id))
       add(report, "error", "extra-management", "D7 entry has no matching source in the audited scope", worker, [row]);
   }
   report.totals.push({ workerKey: worker.workerKey, worker: worker.name, database: "D3", groups: aggregates(d3) },

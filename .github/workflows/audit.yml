@@ -91,7 +91,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Fetch preceding sync context
+      - id: marker_download
+        name: Fetch preceding sync context
+        continue-on-error: true
         if: needs.gate.outputs.marker == 'true'
         uses: actions/github-script@v8
         with:
@@ -107,14 +109,23 @@ jobs:
               ...context.repo, artifact_id: marker.id, archive_format: 'zip',
             });
             fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'audit-source.zip'), Buffer.from(response.data));
-      - name: Extract preceding sync marker
+      - id: marker_extract
+        name: Extract preceding sync marker
+        continue-on-error: true
         if: needs.gate.outputs.marker == 'true'
         run: |
           mkdir -p "$RUNNER_TEMP/audit-source"
           unzip -p "$RUNNER_TEMP/audit-source.zip" standort-audit-marker.json > "$RUNNER_TEMP/audit-source/standort-audit-marker.json"
-      - name: Read preceding sync context
+      - id: marker_read
+        name: Read preceding sync context
+        continue-on-error: true
         if: needs.gate.outputs.marker == 'true'
         run: node scripts/audit-trigger.js marker "$RUNNER_TEMP/audit-source/standort-audit-marker.json"
+      - name: Record unreadable upstream context
+        if: >-
+          always() && needs.gate.outputs.marker == 'true' &&
+          (steps.marker_download.outcome != 'success' || steps.marker_extract.outcome != 'success' || steps.marker_read.outcome != 'success')
+        run: echo 'AUDIT_UPSTREAM_FAILURE=Preceding sync context could not be verified' >> "$GITHUB_ENV"
       - name: Record upstream setup failure
         if: needs.gate.outputs.marker == 'missing'
         run: echo 'AUDIT_UPSTREAM_FAILURE=Standort workflow failed before its completion marker was published' >> "$GITHUB_ENV"

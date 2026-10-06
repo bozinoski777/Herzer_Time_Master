@@ -104,5 +104,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: standort-audit-marker
+          overwrite: true
           path: ${{ runner.temp }}/standort-audit-marker.json
           retention-days: 7

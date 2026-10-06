@@ -135,6 +135,23 @@ async function collect(config, api = readOnlyApi()) {
       snapshot.d7 = [...found.values()];
     }
     await hydrate(snapshot.d7, ["Standort (D8)"], api);
+    // A source deleted after the preceding sync is a pending edit, not yet a
+    // confirmed orphan. Resolve only current-month unmatched source IDs.
+    if (config.syncCutoff) for (const data of snapshot.workers.filter((w) => w.verified)) {
+      const ids = new Set(data.d3.map((r) => norm(r.id)));
+      data.absentSources = [];
+      for (const row of snapshot.d7) {
+        const source = text(row, "Source Page ID");
+        if (!source || ids.has(norm(source)) || text(row, "Worker Key") !== data.worker.workerKey ||
+            norm(text(row, "Source Database ID")) !== norm(data.worker.d3DatabaseId) ||
+            !row.properties?.Datum?.date?.start?.startsWith(data.worker.currentMonth)) continue;
+        try {
+          const page = await api.getPage(source);
+          assertPageBelongsToWorkerRoute(page, data.worker, "d3");
+          data.absentSources.push(page);
+        } catch (error) { failure("source-access", error, data.worker); }
+      }
+    }
   } catch (error) { failure("management-access", error); }
   return snapshot;
 }

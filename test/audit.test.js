@@ -235,3 +235,9 @@ test("public GitHub reports never contain employee data or raw failures", () => 
   const output = JSON.stringify(publicReport(report)) + publicMarkdown(report);
   for (const value of ["New Name", "wrk_1", "999.123", id(21), "2026-10-01", "secret personal content", "www.notion.so"]) assert.equal(output.includes(value), false, value);
 });
+test("recent source deletions await sync rather than becoming confirmed orphan errors", () => {
+  const s = fixture(); const deleted = s.workers[0].d3.pop(); deleted.in_trash = true; deleted.last_edited_time = "2026-10-05T13:30:00Z";
+  s.workers[0].absentSources = [deleted];
+  const r = compareSnapshot(s, { ...opts, syncCutoff: "2026-10-05T13:15:00Z" });
+  assert.equal(r.status, "WARNING"); assert.ok(codes(r).includes("awaiting-sync"));
+});
