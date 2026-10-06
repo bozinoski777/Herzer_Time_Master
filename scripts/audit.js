@@ -27,12 +27,16 @@ function configuration(args = process.argv.slice(2), env = process.env, now = ne
 }
 async function run(config, operations = {}) {
   const read = operations.collect || collect;
+  const progress = operations.progress || (() => {});
   let report;
   try {
     for (const key of ["d1", "d7", "d8"]) if (!config[key]) throw new Error(`Missing ${key.toUpperCase()}_DATA_SOURCE_ID`);
     if (config.syncCutoff && Number.isNaN(Date.parse(config.syncCutoff))) throw new Error("Invalid preceding-sync timestamp");
+    progress(`Audit ${config.scope}: first read started.`);
     const first = await read(config);
+    progress(`Audit ${config.scope}: first read complete; verification read started.`);
     const second = await read(config);
+    progress(`Audit ${config.scope}: verification read complete.`);
     report = compareReads(first, second, config);
   } catch (error) {
     report = { version: 1, scope: config.scope, runId: config.runId, runUrl: config.runUrl, startedAt: config.startedAt, coverage: {}, totals: [], findings: [] };
@@ -53,6 +57,7 @@ async function run(config, operations = {}) {
   };
   save(); // Preserve findings even if publication fails.
   if (config.publishNotion) {
+    progress("Publishing private Notion audit report.");
     try { report.publication = await (operations.publish || publish)(report, config); }
     catch (error) { add(report, "incomplete", "report-publication", error.message); finish(report); }
     save();
@@ -64,7 +69,7 @@ async function run(config, operations = {}) {
   return report;
 }
 if (require.main === module) {
-  Promise.resolve().then(() => run(configuration())).then((report) => {
+  Promise.resolve().then(() => run(configuration(), { progress: console.log })).then((report) => {
     console.log(`Audit ${report.scope}: ${report.status}; ${report.counts.error} errors, ${report.counts.warning} warnings, ${report.counts.incomplete} incomplete checks.`);
     if (["ERROR", "INCOMPLETE"].includes(report.status)) process.exitCode = 1;
   }).catch((error) => { console.error(error.message); process.exitCode = 1; });

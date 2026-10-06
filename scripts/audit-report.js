@@ -69,7 +69,7 @@ async function verifyParent(d1Id, api) {
   if (!parent) throw new Error("D1 is not directly under Control & Automation");
   const page = await api.getPage(parent);
   const title = notion.titleValue(Object.values(page.properties || {}).find((p) => p.type === "title"));
-  if (title !== "Control & Automation" || page.in_trash) throw new Error("Report destination is not the verified Control & Automation page");
+  if (title !== "Control & Automation" || page.in_trash) throw new Error(`Report destination is not the verified Control & Automation page: ${JSON.stringify({ parentId: parent, title, inTrash: Boolean(page.in_trash) })}`);
   return parent;
 }
 async function reportStore(d1Id, api) {
