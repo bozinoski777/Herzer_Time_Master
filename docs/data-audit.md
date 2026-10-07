@@ -15,7 +15,7 @@ The GitHub **Independent data audit** workflow offers the same two scopes and an
 - **Fehler / ERROR:** Stable records disagree or have duplicate/missing copies or wrong links. The workflow fails.
 - **Unvollständig / INCOMPLETE:** Access, schema, rollover state, unstable reads, upstream failure, or report publication prevented full verification. The workflow fails; this is never treated as a clean audit.
 
-Each report includes scope, coverage, counts, expected/actual values, source links, and totals grouped by worker/month/Standort. Separate current and full views are sorted newest first. System Health has two ordinary Notion status callouts showing the latest result of each scope, time, counts, coverage and report link. These update without replacing user-added content; a current pass never replaces the latest full result. It uses ordinary pages, callouts and table views, with no paid dashboard requirement. Current checks explicitly do not certify history or all-time location totals.
+Each report includes scope, coverage, counts, expected/actual values, source links, and totals grouped by worker/month/Standort. The audit leaves database views untouched. System Health has two ordinary Notion status callouts showing the latest result of each scope, time, counts, coverage and report link. These update without replacing user-added content; a current pass never replaces the latest full result. It uses ordinary pages, callouts and table views, with no paid dashboard requirement. Current checks explicitly do not certify history or all-time location totals.
 
 ## Matching and exceptions
 
@@ -34,7 +34,7 @@ Matching copies cannot prove that hours were actually worked, recover records re
 Automatic runs are disabled until repository variable `AUDIT_ENABLED` is set to `true`.
 
 1. Deploy the code and manually run **full**, with **publish_notion=false**. Review errors and explicit coverage gaps; do not repair data through the audit.
-2. Manually run **full**, with **publish_notion=true**. Verify the report and its two views under System Health.
+2. Manually run **full**, with **publish_notion=true**. Verify the report under System Health.
 3. Set `AUDIT_ENABLED=true` in GitHub repository Actions variables.
 
 Then current audits run after completed Standort attempts, including failures, using a completion marker so skipped DST helper runs do not audit. Full audits run Sundays at 04:35 Europe/Berlin. GitHub scheduling can be delayed. Manual runs remain available. The existing shared concurrency group uses `queue: max` and `cancel-in-progress: false` so audits and business jobs wait for one another instead of dropping pending runs.

@@ -145,15 +145,6 @@ async function reportStore(d1Id, api, systemHealthPageId) {
   const ds = await api.getDataSource(notion.dataSourceIdFromDatabase(db));
   if (norm(notion.databaseIdFromDataSource(ds)) !== norm(db.id)) throw new Error("Report data source has an unexpected parent");
   notion.assertPropertyTypes(ds, SCHEMA);
-  for (const scope of ["current", "full"]) {
-    const name = scope === "current" ? "Aktuell · letzte Prüfungen" : "Vollständig · letzte Prüfungen";
-    const matches = (await api.listAllViews(db.id)).filter((v) => v.name === name);
-    if (matches.length > 1) throw new Error(`Duplicate audit view ${name}`);
-    if (!matches.length) {
-      try { await api.createView({ database_id: db.id, data_source_id: ds.id, name, type: "table", filter: { property: "Umfang", select: { equals: scope } }, sorts: [{ property: "Zeitpunkt", direction: "descending" }] }); }
-      catch (error) { if (!(await api.listAllViews(db.id)).some((v) => v.name === name)) throw error; }
-    }
-  }
   return { db, ds, parent };
 }
 // All writes below are confined to the newly verified report store and rows

@@ -176,6 +176,15 @@ test("report publication recovers ambiguous creates/appends and reuses Run ID wi
   await publish(report, opts, f.api); const count = f.blocks.length; await publish(report, opts, f.api);
   assert.equal(f.rows.length, 1); assert.equal(f.blocks.length, count); assert.ok(count > 0);
 });
+test("repeated audit publication never reads or creates database views", async () => {
+  const f = publisherFixture();
+  f.api.listAllViews = async () => { throw new Error("Views must not be read"); };
+  f.api.createView = async () => { throw new Error("Views must not be created"); };
+  await publish(compareSnapshot(fixture(), opts), opts, f.api);
+  const next = { ...opts, runId: "run-2", startedAt: "2026-10-06T14:00:00Z" };
+  await publish(compareSnapshot(fixture(), next), next, f.api);
+  assert.equal(f.rows.length, 2);
+});
 test("publisher refuses a wrong parent or an unowned report database", async () => {
   const f = publisherFixture(); f.api.getPage = async () => ({ properties: { title: title("Wrong page") } });
   await assert.rejects(publish(compareSnapshot(fixture(), opts), opts, f.api), /verified/); assert.equal(f.writes.length, 0);
