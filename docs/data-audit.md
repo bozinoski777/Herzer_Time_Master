@@ -37,7 +37,7 @@ Automatic runs are disabled until repository variable `AUDIT_ENABLED` is set to 
 2. Manually run **full**, with **publish_notion=true**. Verify the report under System Health.
 3. Set `AUDIT_ENABLED=true` in GitHub repository Actions variables.
 
-Then current audits run after completed Standort attempts, including failures, using a completion marker so skipped DST helper runs do not audit. Full audits run Sundays at 04:35 Europe/Berlin. GitHub scheduling can be delayed. Manual runs remain available. The existing shared concurrency group uses `queue: max` and `cancel-in-progress: false` so audits and business jobs wait for one another instead of dropping pending runs.
+Then current audits run after Standort attempts chained from Daily worker sync, including failures, using a completion marker so skipped DST helper runs do not audit. A manually triggered Standort sync runs independently and does not start an audit; use the separate **Independent data audit** manual workflow when you want to check the data after consolidation. Full audits run Sundays at 04:35 Europe/Berlin. GitHub scheduling can be delayed. The existing shared concurrency group uses `queue: max` and `cancel-in-progress: false` so audits and business jobs wait for one another instead of dropping pending runs.
 
 The stable GitHub run ID is reused on retries. A partially published report stays Unvollständig until all content is saved; ambiguous creates/appends are recovered by reading the existing report. The workflow publishes local artifacts even when data findings or Notion publication fail. Existing GitHub notification settings handle failed runs; this adds no SMS or email sender.
 

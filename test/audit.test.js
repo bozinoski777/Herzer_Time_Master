@@ -251,6 +251,7 @@ test("workflow audit is gated until rollout, keeps all queues, and preserves rep
   for (const name of fs.readdirSync(dir)) { const content = fs.readFileSync(path.join(dir, name), "utf8"); if (content.includes("group: herzer-notion-mutations")) assert.ok(content.includes("queue: max"), name); }
   const content = fs.readFileSync(path.join(dir, "audit.yml"), "utf8");
   assert.ok(content.includes("vars.AUDIT_ENABLED == 'true'")); assert.ok(content.includes("retention-days: 90")); assert.ok(content.includes("if: always()"));
+  assert.ok(content.includes("if (run.event !== 'workflow_run') return;"), "manual Standort runs must not trigger automatic audits");
 });
 test("registry collisions are detected even on pending workers", async () => {
   const f = collectorFixture(); const query = f.api.queryAll;

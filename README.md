@@ -48,7 +48,7 @@ Never give a worker access to D1, D7, D8, Control & Automation, Management, the 
 
 ## What runs
 
-- **Independent data audit:** read-only comparisons after Standort sync, plus a weekly full audit on Sundays at 04:35 Berlin time. Coverage starts permanently on **1 October 2026**; manually migrated earlier records are excluded. Reports appear in GitHub and the **Datenprüfung** database inside **System Health**, with separate latest current/full status cards. Automatic runs require `AUDIT_ENABLED=true` after a manual baseline and publication check. See [audit operation and rollout](docs/data-audit.md).
+- **Independent data audit:** read-only comparisons after Standort syncs chained from Daily worker sync, plus a weekly full audit on Sundays at 04:35 Berlin time. Manually triggered Standort syncs run without starting an audit. Coverage starts permanently on **1 October 2026**; manually migrated earlier records are excluded. Reports appear in GitHub and the **Datenprüfung** database inside **System Health**, with separate latest current/full status cards. Automatic runs require `AUDIT_ENABLED=true` after a manual baseline and publication check. See [audit operation and rollout](docs/data-audit.md).
 
 New D3 and D4 databases created by onboarding include the gray **Kurzarbeit** Standort choice. Existing databases are not backfilled, including when onboarding recovers an existing database. Standort sync and month rollover preserve Kurzarbeit wherever it already exists; they do not add it to older workers. Reporting treats it as a non-location work choice.
 

@@ -59,6 +59,9 @@ jobs:
           script: |
             const run = context.payload.workflow_run;
             if (run.head_repository.full_name !== `${context.repo.owner}/${context.repo.repo}` || run.head_branch !== 'main') return;
+            // A manually dispatched Standort sync may run before Daily worker sync
+            // has consolidated D3 into D7. Audit only the chained daily cadence.
+            if (run.event !== 'workflow_run') return;
             const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
               ...context.repo, run_id: run.id, per_page: 100,
             });

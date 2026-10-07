@@ -82,7 +82,9 @@ jobs:
           D8_DATA_SOURCE_ID: ${{ secrets.D8_DATA_SOURCE_ID }}
           D7_STANDORT_FULL_AUDIT: ${{ github.event_name == 'workflow_dispatch' && inputs.full_d7_audit && 'true' || 'false' }}
       - name: Record completed Standort attempt
-        if: always() && (steps.standort_sync.outcome == 'success' || steps.standort_sync.outcome == 'failure')
+        if: >-
+          always() && github.event_name == 'workflow_run' &&
+          (steps.standort_sync.outcome == 'success' || steps.standort_sync.outcome == 'failure')
         env:
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id || '' }}
           SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion || '' }}
@@ -100,7 +102,9 @@ jobs:
           }));
           JS
       - name: Publish completion marker for independent audit
-        if: always() && (steps.standort_sync.outcome == 'success' || steps.standort_sync.outcome == 'failure')
+        if: >-
+          always() && github.event_name == 'workflow_run' &&
+          (steps.standort_sync.outcome == 'success' || steps.standort_sync.outcome == 'failure')
         uses: actions/upload-artifact@v4
         with:
           name: standort-audit-marker
