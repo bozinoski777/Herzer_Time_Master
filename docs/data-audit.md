@@ -1,6 +1,6 @@
 # Independent data audit
 
-The audit reads business databases and never repairs or rewrites D1, worker frontends, D3, D4, D7, or D8. Only `--publish-notion` permits writes, confined to **System Health** and its own **Datenprüfung** report database. The publisher verifies the **Secure Timekeeping POC** parent through D1 and creates/reuses its direct **System Health** child. It rejects publicly published pages and does not create sharing links; access is inherited from the POC parent.
+The audit reads business databases and never repairs or rewrites D1, worker frontends, D3, D4, D7, or D8. Only `--publish-notion` permits writes, confined to **System Health** and its own **Datenprüfung** report database. The workflow pins the existing System Health page ID with `AUDIT_SYSTEM_HEALTH_PAGE_ID`; the publisher verifies D1 and that the destination is a private page named System Health before writing. Local runs can set the same variable. Without it, the publisher uses the earlier Secure Timekeeping POC parent lookup. The Notion integration needs access to System Health.
 
 The permanent production boundary is **1 October 2026**. Manually migrated records dated through **30 September 2026** are outside audit coverage, including conflicting or selectively copied historical entries. No future run moves this boundary forward. Identity, routing and schema checks still cover all workers; undated records cannot be silently classified as legacy.
 

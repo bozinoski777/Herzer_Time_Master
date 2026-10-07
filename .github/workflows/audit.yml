@@ -82,6 +82,7 @@ jobs:
       D1_DATA_SOURCE_ID: ${{ secrets.D1_DATA_SOURCE_ID }}
       D7_DATA_SOURCE_ID: ${{ secrets.D7_DATA_SOURCE_ID }}
       D8_DATA_SOURCE_ID: ${{ secrets.D8_DATA_SOURCE_ID }}
+      AUDIT_SYSTEM_HEALTH_PAGE_ID: 3f180779-bf2a-8121-b1e5-ff90101ccde1
       AUDIT_SCOPE: ${{ needs.gate.outputs.scope }}
       AUDIT_OUTPUT_DIR: audit-output
       AUDIT_REDACT_GITHUB: 'true'

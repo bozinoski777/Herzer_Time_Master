@@ -18,6 +18,7 @@ function configuration(args = process.argv.slice(2), env = process.env, now = ne
   const startedAt = now.toISOString();
   return { scope, publishNotion, startedAt, currentMonth: berlinDate(now).slice(0, 7),
     d1: env.D1_DATA_SOURCE_ID, d7: env.D7_DATA_SOURCE_ID, d8: env.D8_DATA_SOURCE_ID,
+    systemHealthPageId: env.AUDIT_SYSTEM_HEALTH_PAGE_ID || "",
     runId: env.AUDIT_RUN_ID || (env.GITHUB_RUN_ID ? `${env.GITHUB_REPOSITORY}/${env.GITHUB_RUN_ID}` : crypto.randomUUID()),
     runUrl: env.GITHUB_RUN_ID ? `https://github.com/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}` : "",
     syncCutoff: env.AUDIT_SYNC_CUTOFF || "", upstreamFailure: env.AUDIT_UPSTREAM_FAILURE || "",

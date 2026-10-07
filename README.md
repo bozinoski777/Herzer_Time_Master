@@ -48,7 +48,7 @@ Never give a worker access to D1, D7, D8, Control & Automation, Management, the 
 
 ## What runs
 
-- **Independent data audit:** read-only comparisons after Standort sync, plus a weekly full audit on Sundays at 04:35 Berlin time. Coverage starts permanently on **1 October 2026**; manually migrated earlier records are excluded. Reports appear in GitHub and the **Datenprüfung** database inside **Secure Timekeeping POC → System Health**, with separate latest current/full status cards. Automatic runs require `AUDIT_ENABLED=true` after a manual baseline and publication check. See [audit operation and rollout](docs/data-audit.md).
+- **Independent data audit:** read-only comparisons after Standort sync, plus a weekly full audit on Sundays at 04:35 Berlin time. Coverage starts permanently on **1 October 2026**; manually migrated earlier records are excluded. Reports appear in GitHub and the **Datenprüfung** database inside **System Health**, with separate latest current/full status cards. Automatic runs require `AUDIT_ENABLED=true` after a manual baseline and publication check. See [audit operation and rollout](docs/data-audit.md).
 
 New D3 and D4 databases created by onboarding include the gray **Kurzarbeit** Standort choice. Existing databases are not backfilled, including when onboarding recovers an existing database. Standort sync and month rollover preserve Kurzarbeit wherever it already exists; they do not add it to older workers. Reporting treats it as a non-location work choice.
 
@@ -135,12 +135,13 @@ Store runtime values as **GitHub Actions secrets**. The IDs are not credentials,
 
 Add or update them in **Herzer_Time_Master → Settings → Secrets and variables → Actions**. The onboarding workflow prefers `EMPLOYEE_FRONTENDS_DATA_SOURCE_ID`; if it is temporarily empty, it safely discovers the index from the legacy POC page ID and refuses to look anywhere else.
 
-Configure the Notion integration with **read content**, **update content**, and **insert content**, then connect it only to the Secure Timekeeping POC resources it needs:
+Configure the Notion integration with **read content**, **update content**, and **insert content**, then connect it only to the Herzer 2.0 resources it needs:
 
 - D1 · User Data
 - D7 · Management Consolidated
 - D8 · Standorte & Project Control
 - Employee Front-ends
+- System Health (for private audit reports)
 - the legacy `Employee Front-end – migrated` page only while the fallback secret remains in use
 
 ## Required Notion schema

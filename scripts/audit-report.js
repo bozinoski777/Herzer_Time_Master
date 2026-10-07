@@ -66,10 +66,20 @@ const HEALTH_TITLE = "System Health";
 const OVERVIEW_LABELS = { current: "Aktueller Monat", full: "Gesamter Produktionszeitraum" };
 const pageTitle = (page) => notion.titleValue(Object.values(page.properties || {}).find((v) => v.type === "title")).trim();
 const healthyParent = (page) => { if (page.in_trash || page.archived || page.public_url) throw new Error("Report parent is trashed or publicly published"); return page; };
-async function verifyParent(d1Id, api) {
+async function verifyParent(d1Id, api, systemHealthPageId) {
   const ds = await api.getDataSource(d1Id);
   const db = await api.getDatabase(notion.databaseIdFromDataSource(ds));
-  let root = healthyParent(await api.getPage(db.parent?.page_id));
+  if (systemHealthPageId) {
+    if (!/^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i.test(systemHealthPageId))
+      throw new Error("Configured System Health page ID is invalid");
+    if (!db.id) throw new Error("D1 database could not be verified");
+    const health = healthyParent(await api.getPage(systemHealthPageId));
+    if (norm(health.id) !== norm(systemHealthPageId) || pageTitle(health) !== HEALTH_TITLE)
+      throw new Error("Configured report destination is not the verified System Health page");
+    return health.id;
+  }
+  if (!db.parent?.page_id) throw new Error("D1 has no page parent; configure AUDIT_SYSTEM_HEALTH_PAGE_ID");
+  let root = healthyParent(await api.getPage(db.parent.page_id));
   if (pageTitle(root) === "Control & Automation" && root.parent?.page_id) root = healthyParent(await api.getPage(root.parent.page_id));
   if (pageTitle(root) !== "Secure Timekeeping POC" || !root.id) throw new Error("Report destination is not the verified Secure Timekeeping POC page");
   const locate = async () => {
@@ -116,8 +126,8 @@ async function updateOverview(parent, dsId, api) {
     await api.notion(`/blocks/${targets[0].id}`, { method: "PATCH", body: { callout: { icon: { type: "emoji", emoji: status === "OK" ? "✅" : status === "Hinweise" ? "🟡" : "🔴" }, rich_text: [...rich(content), { type: "text", text: { content: "Bericht öffnen", link: { url: latest.url || `https://www.notion.so/${norm(latest.id)}` } } }] } } });
   }
 }
-async function reportStore(d1Id, api) {
-  const parent = await verifyParent(d1Id, api);
+async function reportStore(d1Id, api, systemHealthPageId) {
+  const parent = await verifyParent(d1Id, api, systemHealthPageId);
   await ensureOverview(parent, api);
   async function locate() {
     const children = await api.listAllBlockChildren(parent);
@@ -149,7 +159,7 @@ async function reportStore(d1Id, api) {
 // All writes below are confined to the newly verified report store and rows
 // found there by Run ID. Business database IDs are never write destinations.
 async function publish(report, config, api = notion) {
-  const { db, ds, parent } = await reportStore(config.d1, api);
+  const { db, ds, parent } = await reportStore(config.d1, api, config.systemHealthPageId);
   const lookup = () => api.queryAll(ds.id, { property: "Run ID", rich_text: { equals: report.runId } });
   let matches = await lookup();
   if (matches.length > 1) throw new Error("Duplicate audit Run ID in report store");

@@ -180,6 +180,27 @@ test("publisher refuses a wrong parent or an unowned report database", async () 
   const f = publisherFixture(); f.api.getPage = async () => ({ properties: { title: title("Wrong page") } });
   await assert.rejects(publish(compareSnapshot(fixture(), opts), opts, f.api), /verified/); assert.equal(f.writes.length, 0);
 });
+test("publisher uses the configured System Health page after D1 moves to the workspace root", async () => {
+  const f = publisherFixture();
+  const getDatabase = f.api.getDatabase, getPage = f.api.getPage;
+  f.api.getDatabase = async n => n === id(2) ? { id: n, parent: { type: "workspace", workspace: true } } : getDatabase(n);
+  f.api.getPage = async n => {
+    assert.equal(n, id(75));
+    return getPage(n);
+  };
+  const config = { ...opts, systemHealthPageId: id(75) };
+  const result = await publish(compareSnapshot(fixture(), opts), config, f.api);
+  assert.equal(result.healthPageId, id(75));
+  assert.equal(f.rows.length, 1);
+});
+test("publisher refuses a configured page with the wrong title before writing", async () => {
+  const f = publisherFixture();
+  const getDatabase = f.api.getDatabase;
+  f.api.getDatabase = async n => n === id(2) ? { id: n, parent: { type: "workspace", workspace: true } } : getDatabase(n);
+  f.api.getPage = async n => ({ id: n, properties: { title: title("Other page") } });
+  await assert.rejects(publish(compareSnapshot(fixture(), opts), { ...opts, systemHealthPageId: id(75) }, f.api), /verified System Health/);
+  assert.equal(f.writes.length, 0);
+});
 
 function collectorFixture() {
   const s = fixture(); const w = s.workers[0].worker;
