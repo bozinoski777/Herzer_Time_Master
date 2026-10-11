@@ -35,6 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       run_standort: ${{ steps.marker.outputs.run_standort }}
+      audit_scope: ${{ steps.marker.outputs.audit_scope }}
     steps:
       - id: marker
         name: Find the completed-sync marker
@@ -50,14 +51,14 @@ jobs:
                 per_page: 100,
               },
             );
-            const commandFinished =
-              ["success", "failure"].includes(context.payload.workflow_run.conclusion) &&
-              artifacts.some(
-                (artifact) =>
-                  artifact.name === "daily-worker-sync-complete" &&
-                  !artifact.expired,
-              );
+            const marker = artifacts.find(
+              (artifact) =>
+                ["daily-worker-sync-complete", "daily-worker-sync-complete-full"].includes(artifact.name) &&
+                !artifact.expired,
+            );
+            const commandFinished = ["success", "failure"].includes(context.payload.workflow_run.conclusion) && Boolean(marker);
             core.setOutput("run_standort", commandFinished ? "true" : "false");
+            core.setOutput("audit_scope", marker?.name === "daily-worker-sync-complete-full" ? "full" : "current");
 
   standorte:
     name: Sync Standort options, D7 relations & D8 pages
@@ -90,6 +91,7 @@ jobs:
           SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion || '' }}
           SOURCE_STARTED: ${{ github.event.workflow_run.run_started_at || '' }}
           STANDORT_OUTCOME: ${{ steps.standort_sync.outcome }}
+          AUDIT_SCOPE: ${{ needs.source.outputs.audit_scope }}
         run: |
           node - <<'JS'
           const fs = require('node:fs');
@@ -99,6 +101,7 @@ jobs:
             dailyConclusion: process.env.SOURCE_CONCLUSION,
             syncCutoff: process.env.SOURCE_STARTED,
             standortConclusion: process.env.STANDORT_OUTCOME,
+            auditScope: process.env.AUDIT_SCOPE,
           }));
           JS
       - name: Publish completion marker for independent audit
@@ -107,7 +110,7 @@ jobs:
           (steps.standort_sync.outcome == 'success' || steps.standort_sync.outcome == 'failure')
         uses: actions/upload-artifact@v4
         with:
-          name: standort-audit-marker
+          name: ${{ needs.source.outputs.audit_scope == 'full' && 'standort-audit-marker-full' || 'standort-audit-marker' }}
           overwrite: true
           path: ${{ runner.temp }}/standort-audit-marker.json
           retention-days: 7

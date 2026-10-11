@@ -5,10 +5,6 @@ on:
     workflows: ["Standort sync"]
     types: [completed]
     branches: [main]
-  schedule:
-    # 04:35 Europe/Berlin; choose CET/CEST in the gate, including DST Sundays.
-    - cron: "35 2 * * 0"
-    - cron: "35 3 * * 0"
   workflow_dispatch:
     inputs:
       scope:
@@ -35,7 +31,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || vars.AUDIT_ENABLED == 'true'
     runs-on: ubuntu-latest
     outputs:
-      scope: ${{ steps.manual.outputs.scope || steps.schedule.outputs.scope || steps.source.outputs.scope }}
+      scope: ${{ steps.manual.outputs.scope || steps.source.outputs.scope }}
       marker: ${{ steps.source.outputs.marker }}
     steps:
       - uses: actions/checkout@v4
@@ -47,11 +43,6 @@ jobs:
         env:
           AUDIT_SCOPE: ${{ inputs.scope }}
         run: echo "scope=$AUDIT_SCOPE" >> "$GITHUB_OUTPUT"
-      - id: schedule
-        if: github.event_name == 'schedule'
-        env:
-          AUDIT_SCHEDULE: ${{ github.event.schedule }}
-        run: node scripts/audit-trigger.js
       - id: source
         if: github.event_name == 'workflow_run'
         uses: actions/github-script@v8
@@ -65,9 +56,9 @@ jobs:
             const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
               ...context.repo, run_id: run.id, per_page: 100,
             });
-            const marker = artifacts.some(a => a.name === 'standort-audit-marker' && !a.expired);
+            const marker = artifacts.find(a => ['standort-audit-marker', 'standort-audit-marker-full'].includes(a.name) && !a.expired);
             if (marker) {
-              core.setOutput('scope', 'current');
+              core.setOutput('scope', marker.name === 'standort-audit-marker-full' ? 'full' : 'current');
               core.setOutput('marker', 'true');
             } else if (['failure', 'cancelled', 'timed_out'].includes(run.conclusion)) {
               // A setup/marker-upload failure must not silently erase coverage.
@@ -108,7 +99,7 @@ jobs:
             const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
               ...context.repo, run_id: context.payload.workflow_run.id, per_page: 100,
             });
-            const marker = artifacts.find(a => a.name === 'standort-audit-marker' && !a.expired);
+            const marker = artifacts.find(a => ['standort-audit-marker', 'standort-audit-marker-full'].includes(a.name) && !a.expired);
             if (!marker) throw new Error('Preceding completion marker is unavailable');
             const response = await github.rest.actions.downloadArtifact({
               ...context.repo, artifact_id: marker.id, archive_format: 'zip',

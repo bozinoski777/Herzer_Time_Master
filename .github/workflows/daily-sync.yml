@@ -9,6 +9,9 @@ on:
     - cron: "15 6 * * 1-5"
     - cron: "15 13 * * 1-5"
     - cron: "15 14 * * 1-5"
+    # Weekly full audit starts only after this Sunday worker sync and Standort sync.
+    - cron: "15 2 * * 0"
+    - cron: "15 3 * * 0"
   workflow_dispatch:
 
 permissions:
@@ -27,15 +30,17 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       run_sync: ${{ steps.decide.outputs.run_sync }}
+      audit_scope: ${{ steps.decide.outputs.audit_scope }}
     steps:
       - id: decide
-        name: Run only at 07:15 or 15:15 Berlin time
+        name: Run at weekday sync times or Sunday 04:15 Berlin time
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
           SCHEDULE: ${{ github.event.schedule || '' }}
         run: |
           run_sync=false
+          audit_scope=current
 
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             run_sync=true
@@ -46,10 +51,15 @@ jobs:
               "+0100|15 6 * * 1-5"|"+0100|15 14 * * 1-5")
                 run_sync=true
                 ;;
+              "+0200|15 2 * * 0"|"+0100|15 3 * * 0")
+                run_sync=true
+                audit_scope=full
+                ;;
             esac
           fi
 
           echo "run_sync=$run_sync" >> "$GITHUB_OUTPUT"
+          echo "audit_scope=$audit_scope" >> "$GITHUB_OUTPUT"
 
   management:
     name: Upsert worker days into management
@@ -82,6 +92,6 @@ jobs:
           steps.management_sync.outcome == 'failure')
         uses: actions/upload-artifact@v4
         with:
-          name: daily-worker-sync-complete
+          name: ${{ needs.cadence.outputs.audit_scope == 'full' && 'daily-worker-sync-complete-full' || 'daily-worker-sync-complete' }}
           path: ${{ runner.temp }}/daily-worker-sync-complete
           retention-days: 1

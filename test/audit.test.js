@@ -7,7 +7,7 @@ const path = require("node:path");
 const { compareSnapshot, compareReads, equalNumber } = require("../scripts/audit-model");
 const { readOnlyApi, collect } = require("../scripts/audit-reader");
 const { configuration, run } = require("../scripts/audit");
-const { scheduledScope, markerContext } = require("../scripts/audit-trigger");
+const { markerContext } = require("../scripts/audit-trigger");
 const { publish, MARKER, SCHEMA } = require("../scripts/audit-report");
 const { VACATION_DAY_FORMULA, D4_PROPERTY_TYPES, DAY_PROPERTY_TYPES } = require("../scripts/day-schemas");
 const { D7_SCHEMA } = require("../scripts/management-sync");
@@ -133,12 +133,10 @@ test("audit defaults are local/current and unsupported options fail", () => {
   const config = configuration([], {}, new Date(opts.startedAt)); assert.equal(config.scope, "current"); assert.equal(config.publishNotion, false);
   assert.throws(() => configuration(["--repair"]), /Unknown/);
 });
-test("Berlin weekly gate handles summer, winter and both DST Sundays", () => {
-  for (const date of ["2026-07-05T03:00:00Z", "2026-03-29T03:00:00Z"]) {
-    assert.equal(scheduledScope("35 2 * * 0", new Date(date)), "full"); assert.equal(scheduledScope("35 3 * * 0", new Date(date)), "");
-  }
-  for (const date of ["2026-01-04T04:00:00Z", "2026-10-25T04:00:00Z"]) assert.equal(scheduledScope("35 3 * * 0", new Date(date)), "full");
+test("chained audit marker carries the full scope and upstream failures", () => {
+  assert.equal(markerContext({ version: 1, standortConclusion: "success", auditScope: "full" }).scope, "full");
   assert.match(markerContext({ version: 1, standortConclusion: "failure", dailyRunId: "1", dailyConclusion: "failure" }).failure, /Daily.*Standort/);
+  assert.throws(() => markerContext({ version: 1, standortConclusion: "success", auditScope: "weekly" }), /Invalid audit scope/);
   assert.throws(() => markerContext({ version: 1, standortConclusion: "skipped" }), /Invalid/);
 });
 test("failed collection or publication still writes an incomplete JSON/Markdown report", async () => {
