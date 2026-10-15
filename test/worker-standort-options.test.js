@@ -136,6 +136,7 @@ test("new worker frontends put the exact four-section manual checklist in a call
   assert.deepEqual(sections.map((section) => section.bulleted_list_item.children.map(blockText)), [
     [
       "Vorlage Teil-Tag anlegen:",
+      "Summe Berechnen in Stunden eingestellt",
       "Spalten: Wochentag, Datum, Stunden, verengen.",
       "Spalten Icons ändern",
       "Seiten-Icon ausblenden",
@@ -160,7 +161,7 @@ test("new worker frontends put the exact four-section manual checklist in a call
     ],
   ]);
   const items = sections.flatMap((section) => section.bulleted_list_item.children);
-  assert.equal(items.length, 16);
+  assert.equal(items.length, 17);
   assert.ok(items.every((block) => block.type === "to_do" && block.to_do.checked === false));
   const teilTagChildren = items[0].to_do.children;
   assert.deepEqual(teilTagChildren.map(blockText), [
@@ -173,7 +174,7 @@ test("new worker frontends put the exact four-section manual checklist in a call
       .map((item) => item.text.content),
     ["Teil-Tag"],
   );
-  assert.equal(items.length + teilTagChildren.length, 18);
+  assert.equal(items.length + teilTagChildren.length, 19);
   assert.deepEqual(
     sections[1].bulleted_list_item.children[0].to_do.rich_text
       .filter((item) => item.annotations?.bold).map((item) => item.text.content),
@@ -238,7 +239,7 @@ test("checklist provisioning recovers a partial callout without duplicating sect
   assert.equal(fixture.children.get(calloutId).length, 4);
   assert.deepEqual(
     fixture.children.get(calloutId).map((section) => fixture.children.get(section.id).length),
-    [5, 3, 5, 3],
+    [6, 3, 5, 3],
   );
   const currentMonthSection = fixture.children.get(calloutId)[0];
   const teilTagItem = fixture.children.get(currentMonthSection.id)[0];

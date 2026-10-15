@@ -113,6 +113,7 @@ const MANUAL_ONBOARDING_CHECKLIST_SECTIONS = [
           { text: "Datum auf das aktuelle Datum setzen." },
         ],
       },
+      { text: "Summe Berechnen in Stunden eingestellt" },
       { text: "Spalten: Wochentag, Datum, Stunden, verengen." },
       { text: "Spalten Icons ändern" },
       { text: "Seiten-Icon ausblenden" },
