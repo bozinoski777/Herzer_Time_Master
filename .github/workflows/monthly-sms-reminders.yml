@@ -2,9 +2,9 @@ name: SMS reminders for incomplete time entries
 
 on:
   schedule:
-    # The cadence job selects exactly the third Friday and five calendar days
-    # before month end. The timezone setting keeps 08:17 in Berlin through DST.
-    - cron: "17 8 * * *"
+    # The cadence job selects exactly five calendar days before month end.
+    # The timezone setting keeps 08:17 in Berlin through DST.
+    - cron: "17 8 23-26 * *"
       timezone: "Europe/Berlin"
   workflow_dispatch:
     inputs:
@@ -31,7 +31,7 @@ jobs:
       run_reminders: ${{ steps.decide.outputs.run_reminders }}
     steps:
       - id: decide
-        name: Run on the third Friday or five days before month end
+        name: Run five days before month end
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -42,14 +42,10 @@ jobs:
             run_reminders=true
           else
             berlin_day="$(TZ=Europe/Berlin date +%-d)"
-            berlin_weekday="$(TZ=Europe/Berlin date +%u)"
             berlin_month="$(TZ=Europe/Berlin date +%Y-%m)"
             berlin_last_day="$(date -d "${berlin_month}-01 +1 month -1 day" +%-d)"
 
-            if ((
-              (berlin_weekday == 5 && berlin_day >= 15 && berlin_day <= 21) ||
-              (berlin_last_day - berlin_day == 5)
-            )); then
+            if (( berlin_last_day - berlin_day == 5 )); then
               run_reminders=true
             fi
           fi

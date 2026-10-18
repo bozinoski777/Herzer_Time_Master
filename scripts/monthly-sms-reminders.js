@@ -1,10 +1,10 @@
 "use strict";
 
 /**
- * Send one SMS reminder per cycle to each active, Ready, opted-in worker whose current
- * D3 month still has an unfinished weekday. It runs once at the end of the
- * third week and again five calendar days before month end, while the D3
- * month remains worker-visible ahead of Month Rollover.
+ * Send one SMS reminder per month to each active, Ready, opted-in worker whose
+ * current D3 month still has an unfinished weekday. The scheduled check runs
+ * five calendar days before month end, while the D3 month remains worker-visible
+ * ahead of Month Rollover.
  *
  * The D1 reminder record is reserved before contacting Twilio. That gives
  * manual re-runs at-most-once behavior even if the runner stops after an SMS
@@ -149,13 +149,6 @@ function lastDayOfMonth(targetMonth) {
   ).toISOString().slice(0, 10);
 }
 
-function thirdFriday(targetMonth) {
-  const firstDay = `${targetMonth}-01`;
-  if (!validIsoDate(firstDay)) throw new Error(`Invalid month "${targetMonth || ""}"`);
-  const firstFridayOffset = (5 - new Date(`${firstDay}T12:00:00Z`).getUTCDay() + 7) % 7;
-  return addDays(firstDay, firstFridayOffset + 14);
-}
-
 function currentReminderRun(environment = process.env, now = new Date()) {
   const eventName = environment.GITHUB_EVENT_NAME || "";
   const targetWorker = String(environment.SMS_REMINDER_TARGET_WORKER || "").trim();
@@ -165,19 +158,18 @@ function currentReminderRun(environment = process.env, now = new Date()) {
   const berlinToday = berlinDateParts(now);
   const targetMonth = monthKey(berlinToday);
   const currentDate = `${targetMonth}-${String(berlinToday.day).padStart(2, "0")}`;
-  const thirdFridayDate = thirdFriday(targetMonth);
   const fiveDaysBeforeMonthEnd = addDays(lastDayOfMonth(targetMonth), -5);
-  const cycle = currentDate >= fiveDaysBeforeMonthEnd
-    ? "five-days-before-month-end"
-    : "third-friday";
   return {
     targetMonth,
     currentDate,
-    thirdFriday: thirdFridayDate,
     fiveDaysBeforeMonthEnd,
-    reminderKey: `${targetMonth}:${cycle}`,
+    reminderKey: targetMonth,
     targetWorker,
   };
+}
+
+function reminderIsDue(run) {
+  return run.currentDate === run.fiveDaysBeforeMonthEnd;
 }
 
 function isRequiredWorkday(isoDate) {
@@ -272,10 +264,14 @@ function workerFromRow(row) {
 }
 
 function existingReminderDecision(worker, targetMonth) {
+  // Old runs used separate third-Friday and month-end keys. Treat either as
+  // this month's reminder so a deployment cannot send a second SMS this month.
+  const recordedMonth = String(worker.reminderMonth || "").slice(0, 7);
+  const sameMonth = recordedMonth === targetMonth;
   if (
     worker.reminderStatus === REMINDER_STATUS.UNCERTAIN &&
     worker.reminderMonth &&
-    worker.reminderMonth !== targetMonth
+    !sameMonth
   ) {
     return {
       action: "block",
@@ -287,10 +283,10 @@ function existingReminderDecision(worker, targetMonth) {
 
   // A clear Twilio 4xx response creates no Message resource, so after the
   // phone/sender/configuration error is corrected a manual run may retry it.
-  if (worker.reminderMonth === targetMonth && worker.reminderStatus === REMINDER_STATUS.FAILED) {
+  if (sameMonth && worker.reminderStatus === REMINDER_STATUS.FAILED) {
     return { action: "send" };
   }
-  if (worker.reminderMonth !== targetMonth) return { action: "send" };
+  if (!sameMonth) return { action: "send" };
 
   // A missing or altered status is not evidence that no SMS was sent. Make
   // an administrator explicitly set Failed only after checking Twilio rather
@@ -505,9 +501,9 @@ function selectWorkers(workers, targetWorker) {
 
 async function main() {
   const run = currentReminderRun();
-  if (run.currentDate < run.thirdFriday) {
+  if (!reminderIsDue(run)) {
     throw new Error(
-      `SMS reminders begin on ${run.thirdFriday}; today is ${run.currentDate} in Europe/Berlin.`,
+      `SMS reminders run only on ${run.fiveDaysBeforeMonthEnd}; today is ${run.currentDate} in Europe/Berlin.`,
     );
   }
   const { D1_DATA_SOURCE_ID: D1 } = requireEnv("D1_DATA_SOURCE_ID");
@@ -567,9 +563,9 @@ module.exports = {
   isoDateInBerlin,
   isRequiredWorkday,
   reminderBody,
+  reminderIsDue,
   reminderRequiredDates,
   selectWorkers,
-  thirdFriday,
   validHttpsUrl,
   workerFromRow,
 };

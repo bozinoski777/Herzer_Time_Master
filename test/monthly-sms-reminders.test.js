@@ -10,9 +10,9 @@ const {
   existingReminderDecision,
   incompleteCurrentMonthDates,
   reminderBody,
+  reminderIsDue,
   reminderRequiredDates,
   selectWorkers,
-  thirdFriday,
   validHttpsUrl,
   workerFromRow,
 } = require("../scripts/monthly-sms-reminders");
@@ -27,23 +27,30 @@ function currentMonthRow(isoDate, { hours = 8, standort = "Augsburg" } = {}) {
   };
 }
 
-test("the two reminder cycles are the third Friday and five calendar days before month end", () => {
-  assert.equal(thirdFriday("2026-09"), "2026-09-18");
+test("the monthly reminder date is five calendar days before month end", () => {
   assert.deepEqual(
-    currentReminderRun({}, new Date("2026-09-18T06:17:00.000Z")),
+    currentReminderRun({}, new Date("2026-09-25T06:17:00.000Z")),
     {
       targetMonth: "2026-09",
-      currentDate: "2026-09-18",
-      thirdFriday: "2026-09-18",
+      currentDate: "2026-09-25",
       fiveDaysBeforeMonthEnd: "2026-09-25",
-      reminderKey: "2026-09:third-friday",
+      reminderKey: "2026-09",
       targetWorker: "",
     },
   );
-  assert.equal(
-    currentReminderRun({}, new Date("2026-09-25T06:17:00.000Z")).reminderKey,
-    "2026-09:five-days-before-month-end",
-  );
+  for (const [timestamp, dueDate] of [
+    ["2026-01-26T07:17:00.000Z", "2026-01-26"],
+    ["2026-04-25T06:17:00.000Z", "2026-04-25"],
+    ["2026-02-23T07:17:00.000Z", "2026-02-23"],
+    ["2028-02-24T07:17:00.000Z", "2028-02-24"],
+  ]) {
+    const run = currentReminderRun({}, new Date(timestamp));
+    assert.equal(run.fiveDaysBeforeMonthEnd, dueDate);
+    assert.equal(run.reminderKey, dueDate.slice(0, 7));
+    assert.equal(reminderIsDue(run), true);
+  }
+  assert.equal(reminderIsDue(currentReminderRun({}, new Date("2026-09-18T06:17:00.000Z"))), false);
+  assert.equal(reminderIsDue(currentReminderRun({}, new Date("2026-09-26T06:17:00.000Z"))), false);
 });
 
 test("manual dispatch can target one exact active worker without weakening scheduled scope", () => {
@@ -99,13 +106,17 @@ test("required reminder dates include every Monday–Friday in the whole current
   assert.deepEqual(april.slice(0, 2), ["2026-04-02", "2026-04-03"]);
   assert.equal(april.includes("2026-04-03"), true); // Karfreitag still needs its preset fields
   assert.equal(april.includes("2026-04-04"), false); // Saturday
-  assert.equal(april.includes("2026-04-20"), true); // after third Friday still required
+  assert.equal(april.includes("2026-04-27"), true); // after the reminder date still required
   assert.equal(reminderRequiredDates("2026-04", "2026-05-01").length, 0);
 });
 
 test("a missing day or a blank split-day D3 row makes that workday incomplete", () => {
   const targetMonth = "2026-04";
   const required = reminderRequiredDates(targetMonth, "2026-01-01");
+  assert.deepEqual(
+    incompleteCurrentMonthDates(required.map((day) => currentMonthRow(day)), targetMonth, "2026-01-01"),
+    [],
+  );
   const rows = required
     .filter((day) => day !== "2026-04-07")
     .map((day) => currentMonthRow(day));
@@ -121,39 +132,48 @@ test("a missing day or a blank split-day D3 row makes that workday incomplete", 
 test("only confirmed failed attempts can be retried; accepted and uncertain attempts are not resent", () => {
   assert.deepEqual(
     existingReminderDecision(
-      { reminderMonth: "2026-09:third-friday", reminderStatus: REMINDER_STATUS.ACCEPTED },
-      "2026-09:third-friday",
+      { reminderMonth: "2026-09", reminderStatus: REMINDER_STATUS.ACCEPTED },
+      "2026-09",
     ),
     { action: "skip", reason: "SMS Reminder Status is Accepted" },
   );
   assert.deepEqual(
     existingReminderDecision(
-      { reminderMonth: "2026-09:third-friday", reminderStatus: REMINDER_STATUS.FAILED },
-      "2026-09:third-friday",
+      { reminderMonth: "2026-09", reminderStatus: REMINDER_STATUS.FAILED },
+      "2026-09",
     ),
     { action: "send" },
   );
   assert.equal(
     existingReminderDecision(
-      { reminderMonth: "2026-09:third-friday", reminderStatus: REMINDER_STATUS.UNCERTAIN },
-      "2026-09:five-days-before-month-end",
+      { reminderMonth: "2026-08", reminderStatus: REMINDER_STATUS.UNCERTAIN },
+      "2026-09",
     ).action,
     "block",
   );
   assert.equal(
     existingReminderDecision(
-      { reminderMonth: "2026-09:third-friday", reminderStatus: "" },
-      "2026-09:third-friday",
+      { reminderMonth: "2026-09", reminderStatus: "" },
+      "2026-09",
     ).action,
     "skip",
   );
   assert.equal(
     existingReminderDecision(
-      { reminderMonth: "2026-09:third-friday", reminderStatus: REMINDER_STATUS.ACCEPTED },
-      "2026-09:five-days-before-month-end",
+      { reminderMonth: "2026-08", reminderStatus: REMINDER_STATUS.ACCEPTED },
+      "2026-09",
     ).action,
     "send",
   );
+  for (const oldCycle of ["third-friday", "five-days-before-month-end"]) {
+    assert.equal(
+      existingReminderDecision(
+        { reminderMonth: `2026-09:${oldCycle}`, reminderStatus: REMINDER_STATUS.ACCEPTED },
+        "2026-09",
+      ).action,
+      "skip",
+    );
+  }
 });
 
 test("phone numbers and worker links must be safe to send", () => {
