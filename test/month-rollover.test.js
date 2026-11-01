@@ -2,9 +2,12 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { readFileSync } = require("node:fs");
+const { createRequire } = require("node:module");
+const { compileFunction } = require("node:vm");
 
-// The module validates its runtime configuration at load time, but these unit
-// tests exercise only exported date/simulation helpers and never call Notion.
+// The module validates runtime configuration at load time. Tests exercise its
+// helpers and transactions with mocked API boundaries and never call Notion.
 process.env.D1_DATA_SOURCE_ID = "test-d1";
 process.env.D7_DATA_SOURCE_ID = "test-d7";
 process.env.D8_DATA_SOURCE_ID = "test-d8";
@@ -26,6 +29,7 @@ const {
   validateD3Rows,
   validateRolloverRegistry,
   verifyD4ExactMonth,
+  waitForD4ExactMonth,
 } = require("../scripts/month-rollover");
 const {
   HOLIDAY_HOURS,
@@ -175,6 +179,259 @@ function sourceEntry(row) {
   const sourceDate = row.properties.Datum.date.start;
   return { row, sourceDate, sourceMonth: sourceDate.slice(0, 7) };
 }
+
+test("D4 barrier waits for a newly created row to appear without repeating writes", async () => {
+  const worker = { name: "Ada", workerKey: "worker-a", d4DataSourceId: "d4-a" };
+  const source = [sourceEntry(rolloverDay("d3-oct-31", "2026-10-31"))];
+  const archived = rolloverDay("d4-oct-31", "2026-10-31", {
+    workerKey: "worker-a", sourcePageId: "d3-oct-31",
+  });
+  let reads = 0;
+  const delays = [];
+  const messages = [];
+  assert.equal(await waitForD4ExactMonth(worker, "2026-10", source, {
+    readArchiveRows: async (dataSourceId) => {
+      assert.equal(dataSourceId, "d4-a");
+      reads += 1;
+      return reads === 1 ? [] : [archived];
+    },
+    wait: async (delay) => delays.push(delay),
+    reportRetry: (message) => messages.push(message),
+  }), true);
+  assert.equal(reads, 2);
+  assert.deepEqual(delays, [1000]);
+  assert.match(messages[0], /Missing Sync Key\(s\): worker-a\|2026-10-31\|d3-oct-31/);
+});
+
+test("D4 barrier waits for updated values and verifies them against the same snapshot", async () => {
+  const worker = { name: "Ada", workerKey: "worker-a" };
+  const source = [sourceEntry(rolloverDay("d3-oct-31", "2026-10-31", { hours: 4 }))];
+  const archived = (hours) => rolloverDay("d4-oct-31", "2026-10-31", {
+    workerKey: "worker-a", sourcePageId: "d3-oct-31", hours,
+  });
+  let reads = 0;
+  const delays = [];
+  assert.equal(await waitForD4ExactMonth(worker, "2026-10", source, {
+    readArchiveRows: async () => [archived(++reads === 1 ? 8 : 4)],
+    wait: async (delay) => delays.push(delay),
+    reportRetry: () => {},
+  }), true);
+  assert.equal(reads, 2);
+  assert.deepEqual(delays, [1000]);
+});
+
+test("D4 barrier stops after bounded reads when a row stays missing", async () => {
+  const worker = { name: "Ada", workerKey: "worker-a" };
+  const source = [sourceEntry(rolloverDay("d3-oct-31", "2026-10-31"))];
+  let reads = 0;
+  const delays = [];
+  await assert.rejects(waitForD4ExactMonth(worker, "2026-10", source, {
+    readArchiveRows: async () => { reads += 1; return []; },
+    wait: async (delay) => delays.push(delay),
+    reportRetry: () => {},
+  }), /expected 1 row\(s\), found 0.*D3 remains unchanged/);
+  assert.equal(reads, 5);
+  assert.deepEqual(delays, [1000, 2000, 4000, 8000]);
+});
+
+test("D4 barrier never accepts persistent extra or duplicate rows", async () => {
+  const worker = { name: "Ada", workerKey: "worker-a" };
+  const source = [sourceEntry(rolloverDay("d3-oct-31", "2026-10-31"))];
+  const archived = rolloverDay("d4-oct-31", "2026-10-31", {
+    workerKey: "worker-a", sourcePageId: "d3-oct-31",
+  });
+  const extra = rolloverDay("d4-extra", "2026-10-30", {
+    workerKey: "worker-a", sourcePageId: "deleted-source",
+  });
+  for (const rows of [[archived, extra], [archived, { ...archived, id: "d4-duplicate" }]]) {
+    let reads = 0;
+    await assert.rejects(waitForD4ExactMonth(worker, "2026-10", source, {
+      readArchiveRows: async () => { reads += 1; return rows; },
+      wait: async () => {},
+      reportRetry: () => {},
+    }), /expected 1 row\(s\), found 2/);
+    assert.equal(reads, 5);
+  }
+});
+
+test("D4 barrier rejects invalid ownership immediately instead of retrying it", async () => {
+  const worker = { name: "Ada", workerKey: "worker-a" };
+  const source = [sourceEntry(rolloverDay("d3-oct-31", "2026-10-31"))];
+  const foreign = rolloverDay("d4-foreign", "2026-10-31", {
+    workerKey: "worker-b", sourcePageId: "d3-oct-31",
+  });
+  let reads = 0;
+  await assert.rejects(waitForD4ExactMonth(worker, "2026-10", source, {
+    readArchiveRows: async () => { reads += 1; return [foreign]; },
+    wait: async () => { assert.fail("ownership errors must not wait"); },
+    reportRetry: () => { assert.fail("ownership errors must not retry"); },
+  }), /foreign Sync Key\/Datum ownership/);
+  assert.equal(reads, 1);
+});
+
+// Run the real transaction and select helper in an isolated CommonJS module.
+// Only API boundaries and timers are replaced; no global module-cache or
+// environment mutation is needed to exercise the order of live operations.
+function archiveTransactionFixture({ permanentlyMissing = false, failFirstRebuild = false } = {}) {
+  const worker = {
+    name: "Ada", workerKey: "worker-a", rowId: "d1-a", active: false,
+    d3DatabaseId: "d3-db-a", d3DataSourceId: "d3-a",
+    d4DatabaseId: "d4-db-a", d4DataSourceId: "d4-a",
+    currentMonth: "2026-10", lastArchivedMonth: "2026-09", rolloverStatus: "Ready",
+  };
+  const sourceRows = monthDays("2026-10").map(({ isoDate }, index) => ({
+    ...rolloverDay(`d3-${index + 1}`, isoDate),
+    parent: { type: "data_source_id", data_source_id: worker.d3DataSourceId },
+    in_trash: false,
+  }));
+  const sourceEntries = sourceRows.map(sourceEntry);
+  const archiveRows = [];
+  const events = [];
+  const state = {};
+  let d4ReadsAfterWrites = 0;
+  let fullyVisible = false;
+  let rebuildAttempts = 0;
+  const dataSources = Object.fromEntries([
+    [worker.d4DataSourceId, Array.from({ length: 100 }, (_, index) => ({
+      id: `old-${index}`, name: `Historical ${index}`, color: "red",
+    }))],
+    [worker.d3DataSourceId, [{ id: "berlin", name: "Berlin", color: "blue" }]],
+  ].map(([id, options]) => [id, {
+    id, properties: { Standort: { type: "select", select: { options } } },
+  }]));
+  const readProperties = (properties) => Object.fromEntries(Object.entries(properties).map(([name, property]) => {
+    const type = property.title ? "title" : property.rich_text ? "rich_text" : "";
+    return [name, type ? { [type]: property[type].map((item) => ({
+      plain_text: item.plain_text || item.text?.content || "",
+    })) } : structuredClone(property)];
+  }));
+  const notion = {
+    ...require("../scripts/notion"),
+    getDataSource: async (id) => dataSources[id],
+    queryAll: async (id) => {
+      if (id === worker.d3DataSourceId) return sourceRows.filter((row) => !row.in_trash);
+      if (id === "test-d8") return [];
+      assert.equal(id, worker.d4DataSourceId);
+      if (archiveRows.length === 0) return [];
+      assert.equal(archiveRows.length, 31);
+      d4ReadsAfterWrites += 1;
+      const count = permanentlyMissing || d4ReadsAfterWrites === 1 ? 30 : 31;
+      fullyVisible = count === 31;
+      events.push(`read-d4:${count}`);
+      return archiveRows.slice(0, count);
+    },
+    createPage: async (parent, properties) => {
+      assert.equal(parent.data_source_id, worker.d4DataSourceId);
+      assert.equal(properties.Standort.select.name, "Berlin");
+      events.push("create-d4");
+      const options = dataSources[worker.d4DataSourceId].properties.Standort.select.options;
+      if (!options.some((option) => option.name === "Berlin")) {
+        options.push({ id: "new-berlin", name: "Berlin", color: "default" });
+      }
+      const row = { id: `d4-${archiveRows.length + 1}`, properties: readProperties(properties) };
+      archiveRows.push(row);
+      return row;
+    },
+    updateDataSource: async (id, properties) => {
+      const options = properties.Standort.select.options;
+      assert.ok(options.length <= 100, "never send an oversized schema option array");
+      assert.equal(id, worker.d3DataSourceId, "D4 must add the new location through archive page writes");
+      rebuildAttempts += 1;
+      if (failFirstRebuild && rebuildAttempts === 1) throw new Error("simulated D3 schema rejection");
+      dataSources[id].properties.Standort.select.options = options;
+    },
+    updatePage: async (id, properties) => {
+      assert.equal(id, worker.rowId, "existing D4 rows must not be rewritten during verification retries");
+      Object.assign(state, readProperties(properties));
+    },
+    getPage: async (id) => {
+      const row = sourceRows.find((source) => source.id === id);
+      assert.ok(row);
+      return row;
+    },
+    archivePage: async (id) => {
+      assert.equal(fullyVisible, true, "D3 must remain visible until all 31 D4 rows are verified");
+      events.push(`archive-d3:${id}`);
+      sourceRows.find((row) => row.id === id).in_trash = true;
+    },
+    restorePage: async () => { assert.fail("a verified fixture should never need source rollback"); },
+  };
+  const mocks = {
+    "./notion": notion,
+    "./archive-presentation": {
+      ensureArchiveSchema: async (id) => dataSources[id],
+      configureArchiveView: async () => {},
+      ensureArchiveVacationView: async () => {},
+    },
+    "./management-sync": {
+      syncWorkerToManagement: async () => {
+        assert.equal(fullyVisible, true, "management sync must wait for the full D4 barrier");
+        events.push("verify-d7");
+        return { created: 0, updated: 0, archived: 0, unchanged: 31 };
+      },
+    },
+    "./sync-standorte": { syncD7StandortRelations: async () => 0 },
+  };
+  const load = (filename) => {
+    const localRequire = createRequire(filename);
+    const module = { exports: {} };
+    const mockedRequire = (name) => mocks[name] || (name === "./select-options"
+      ? load(localRequire.resolve(name)) : localRequire(name));
+    compileFunction(readFileSync(filename, "utf8"), ["require", "module", "exports", "setTimeout", "console"], {
+      filename,
+    })(mockedRequire, module, module.exports, (callback, delay) => {
+      events.push(`wait:${delay}`);
+      callback();
+    }, { log: () => {}, warn: () => {}, error: () => {} });
+    return module.exports;
+  };
+  return {
+    api: load(require.resolve("../scripts/month-rollover")), worker, sourceEntries,
+    sourceRows, archiveRows, events, state, dataSources,
+    rebuildAttempts: () => rebuildAttempts,
+  };
+}
+
+test("October archive waits for 31-row visibility and adds a location above 100 historical choices without a schema PATCH", async () => {
+  const fixture = archiveTransactionFixture();
+  await fixture.api.archiveMonth(fixture.worker, "2026-10", fixture.sourceEntries, "2026-11");
+  assert.equal(fixture.events.filter((event) => event === "create-d4").length, 31);
+  assert.deepEqual(fixture.events.filter((event) => event.startsWith("read-d4:")).slice(0, 2), ["read-d4:30", "read-d4:31"]);
+  assert.ok(fixture.events.indexOf("verify-d7") > fixture.events.indexOf("read-d4:31"));
+  assert.ok(fixture.events.indexOf("archive-d3:d3-1") > fixture.events.indexOf("read-d4:31"));
+  assert.equal(fixture.sourceRows.filter((row) => row.in_trash).length, 31);
+  const options = fixture.dataSources[fixture.worker.d4DataSourceId].properties.Standort.select.options;
+  assert.equal(options.length, 101);
+  assert.ok(options.slice(0, 100).every((option) => option.color === "red"));
+  assert.equal(options.at(-1).name, "Berlin");
+});
+
+test("a persistent 30-of-31 archive result leaves every October D3 source visible", async () => {
+  const fixture = archiveTransactionFixture({ permanentlyMissing: true });
+  await assert.rejects(
+    fixture.api.archiveMonth(fixture.worker, "2026-10", fixture.sourceEntries, "2026-11"),
+    /expected 31 row\(s\), found 30/,
+  );
+  assert.equal(fixture.events.filter((event) => event === "create-d4").length, 31);
+  assert.equal(fixture.events.filter((event) => event === "read-d4:30").length, 5);
+  assert.equal(fixture.events.some((event) => event.startsWith("archive-d3:") || event === "verify-d7"), false);
+  assert.equal(fixture.sourceRows.filter((row) => !row.in_trash).length, 31);
+  assert.equal(fixture.state["Rollover Manifest"], undefined);
+});
+
+test("a D3 rebuild failure after durable archival is retried even when Current Month already advanced", async () => {
+  const fixture = archiveTransactionFixture({ failFirstRebuild: true });
+  const run = { targetMonth: "2026-11" };
+  await assert.rejects(fixture.api.rolloverWorker(fixture.worker, run), /simulated D3 schema rejection/);
+  assert.equal(fixture.state["Current Month"].rich_text[0].plain_text, "2026-11");
+  assert.equal(fixture.state["Last Archived Month"].rich_text[0].plain_text, "2026-10");
+  await fixture.api.rolloverWorker({
+    ...fixture.worker, currentMonth: "2026-11", lastArchivedMonth: "2026-10", rolloverStatus: "Error",
+  }, run);
+  assert.equal(fixture.rebuildAttempts(), 2);
+  assert.equal(fixture.events.filter((event) => event === "create-d4").length, 31);
+  assert.equal(fixture.state["Rollover Status"].select.name, "Ready");
+});
 
 function januaryCarryover() {
   const row = rolloverDay("carryover", "2027-01-01", { hours: -8 });

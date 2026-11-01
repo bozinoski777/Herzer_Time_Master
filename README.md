@@ -91,18 +91,26 @@ For every D3 month older than the current `Europe/Berlin` month, the workflow:
 
 1. Preflights every Ready worker before touching time rows: Worker Key, D3 database/data-source pair, and D4 database/data-source pair must be complete, unique, and correctly parented.
 2. Sets the worker’s D1 `Rollover Status` to `Running`, clears the earlier error, and selects only one completed D3 month. Missing, time-bearing, future, or ranged dates and duplicate page IDs stop safely with `Error`; multiple distinct D3 pages may share one date.
-3. Ensures D4 has hidden `Sync Key` and `Source Page ID` properties and adds every `Standort` value used in the source rows **without removing any historic option**.
+3. Ensures D4 has hidden `Sync Key` and `Source Page ID` properties and adds every `Standort` value used in the source rows **without removing any historic option**. When the resulting history exceeds Notion's 100-option schema-request limit, the D4 row writes add missing choices by name instead of sending the full options list. Existing choices and colors remain; Notion assigns its default color to newly added choices on this path. An oversized change that would remove or modify existing choices fails before a schema write.
 4. Upserts each D3 page into D4 with `Worker Key|YYYY-MM-DD|D3 Page ID`, preserving `Wochentag`, `Datum`, `Stunden`, `Standort`, and source identity. A retry updates the existing archive row rather than creating another one. An unambiguous older date-only D4 row is upgraded in place; an old row without source identity on a date with multiple D3 entries fails closed for manual review.
-5. Re-queries D4 and verifies that each expected archive row exists exactly once and has the source values. If this barrier fails, D3 is not touched.
+5. Re-queries D4 and verifies that each expected archive row exists exactly once and has the source values. A bounded series of fresh reads allows recently written rows to become query-visible; it never creates more copies or relaxes the exact-set/value checks. If verification still fails, D3 is not touched. A missing result immediately after a write can indicate delayed query visibility; the result count alone does not establish that cause.
 6. Uses the same Source Page ID-aware reconciler as Daily sync to make D7 exact for that final month, then reads it back and verifies every value.
 7. Reconciles and verifies D7’s `Standort (D8)` relation, so D8 hours are correct before D3 is hidden.
 8. Re-queries D3, then saves a hidden `Rollover Manifest` containing the exact verified source page/value snapshot plus the worker's D3/D4 database and data-source routes before the first D3 archive call.
 9. Soft-archives each old D3 page, reads it back, verifies both its final values and trash state, then verifies D4, D7, and D8 again. If an edit, new row, route change, or final-barrier failure is detected during this window, pages archived by the transaction are restored and the run fails for a clean retry. A runner crash resumes the saved manifest, including pages already archived before the crash.
-10. Rebuilds the worker D3 `Standort` select from currently `Active = true` D8 sites plus the five standard work choices, retaining `Teil-Tag` and `Kurzarbeit` only where they already exist. This happens only after the old month is safely hidden; historic D4 and D7 options are never pruned.
+10. Rebuilds the worker D3 `Standort` select from currently `Active = true` D8 sites plus the five standard work choices, retaining `Teil-Tag` and `Kurzarbeit` only where they already exist. This happens only after the old month is safely hidden; historic D4 and D7 options are never pruned. An interrupted or failed refresh is retried even if D1 already records the new Current Month.
 11. For active workers only, creates missing daily rows for the current month. Augsburg statutory holidays that fall Monday–Friday are created as `Feiertag` with 8 hours; all other days begin blank. Every retry checks `Datum` first, so it can resume after a partial generation without duplicates. Inactive workers finish with an empty D3 after their final archive.
 12. In one D1 update, records both the completed `Last Archived Month` and target `Current Month` while clearing the manifest. It then records `Last Rollover At` and `Rollover Status = Ready`. Any failure remains visible in `Rollover Error`.
 
 D7 remains the all-time management store. For the one D1 `Current Month` being finalized, rollover removes only stale copies that are demonstrably absent from the pre-archive D3 snapshot, then verifies the exact result. Earlier months are outside that cleanup scope.
+
+### Recovering a failed live rollover
+
+After a code fix, push the tested commit to `main`, then start a **new run**: GitHub → **Actions** → **Archive completed month and prepare current month** → **Run workflow** → select **main**. Leave **simulation** unchecked and **simulated current date** blank. GitHub's **Re-run jobs** action uses the original commit, so re-running an old failure will not pick up a later code fix. See [GitHub's rerun behavior](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs) and [manual run instructions](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).
+
+For the November 1, 2026 failure, first run with **target worker** set to the exact Worker Key or name for Kiro Ivanovski to check archive verification, then Ilija Krsteski to check the larger Standort history. Confirm D1 shows `Current Month = 2026-11`, `Last Archived Month = 2026-10`, `Rollover Status = Ready`, and empty `Rollover Error` and `Rollover Manifest`. For each active worker, D3 should include all 30 November dates, and D4/D7 should preserve every October source page, including split-day entries. Then start another new run with **target worker** blank to recover everyone.
+
+The run processes workers independently: Petar Cuculoski and Aco Spirkoski completed in that log, while the ten failures stopped before their October D3 pages were archived. Those failed attempts can leave valid D4 copies, which the next run reuses. Completed workers are safe to include again because `Last Archived Month` prevents re-archiving the completed month and generation adds only missing current-month dates. Do not clear recovery fields or delete partial archive copies to prepare a retry. Simulation writes to the selected worker and is unnecessary for live recovery.
 
 ## Offboarding
 
@@ -274,14 +282,16 @@ Simulation changes only the selected POC worker and still performs the same safe
 
 There is no documentation GitHub workflow. The version-controlled runbook is `docs/control-automation-month-rollover.md`. The guarded local `scripts/document-control-automation.js` can add the section only when D1’s direct parent title is exactly `Control & Automation`; it deliberately does not rewrite an existing section and must never be pointed at live v1.
 
-## Local static check
+## Code validation
 
-Node 22 or later is sufficient; there are no npm dependencies. This syntax-only check never contacts Notion:
+Node 22 or later is sufficient; there are no npm dependencies. Run the syntax checks and automated tests locally without live service credentials:
 
 ```bash
 npm run check
 npm test
 ```
+
+The independent **Validate scripts and tests** GitHub workflow runs both commands on every push and pull request using Node 22. It has read-only repository permissions, receives no service secrets, and never runs the live Notion or SMS scripts. These checks include regression coverage for delayed D4 query visibility and large Standort option sets; they cannot guarantee that an external service will never fail.
 
 ## Fractional vacation-day migration
 

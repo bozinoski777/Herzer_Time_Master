@@ -2,10 +2,12 @@
 
 const { getDataSource, updateDataSource } = require("./notion");
 
+const MAX_SELECT_OPTIONS_PER_SCHEMA_UPDATE = 100;
+
 /**
  * Build a Notion select-option update without attempting to recolor an
- * existing option. Notion rejects `color` when an option is addressed by ID,
- * so IDs and colors are deliberately mutually exclusive in the result.
+ * existing option. IDs retain the target property's existing metadata, so
+ * colors are included only when creating a new option.
  *
  * Desired options are matched to the target property's existing options by
  * name. An ID supplied only by a desired option is ignored: option IDs belong
@@ -54,8 +56,8 @@ function optionNames(options) {
  *
  * `protectedNames` is intended for values that are still selected by rows.
  * Removing one would make the resulting data ambiguous, so the planner fails
- * before an API write. Existing option colors are deliberately ignored:
- * Notion does not permit changing the color of an option addressed by ID.
+ * before an API write. Desired colors for existing options are deliberately
+ * ignored so automated reconciliation preserves their current presentation.
  */
 function planSelectOptionUpdate(
   existingOptions,
@@ -100,7 +102,15 @@ function selectProperty(dataSource, dataSourceId, propertyName) {
   return property;
 }
 
-/** Fetch, plan, and apply a Select property update only when names/order differ. */
+/**
+ * Fetch, plan, and apply a Select property update only when names/order differ.
+ * A schema options array replaces the entire list; it cannot safely be split
+ * into batches. A historical caller that writes every requested value to real
+ * pages may explicitly defer oversized additive updates to those page writes.
+ * Notion adds missing select names on page writes without removing historical
+ * choices. Existing colors survive; newly added names use Notion's default
+ * color because page values cannot set schema option colors.
+ */
 async function updateDataSourceSelect({
   dataSourceId,
   dataSource,
@@ -108,6 +118,7 @@ async function updateDataSourceSelect({
   desiredOptions,
   retainExisting = false,
   protectedNames = [],
+  allowPageWritesToAdd = false,
 }) {
   if (!dataSourceId) throw new Error("A data source ID is required for a Select update");
   const currentDataSource = dataSource || await getDataSource(dataSourceId);
@@ -119,6 +130,18 @@ async function updateDataSourceSelect({
   );
 
   if (plan.changed) {
+    if (plan.nextOptions.length > MAX_SELECT_OPTIONS_PER_SCHEMA_UPDATE) {
+      if (retainExisting && allowPageWritesToAdd && plan.removed.length === 0) {
+        return { ...plan, deferred: [...plan.added] };
+      }
+      throw new Error(
+        `Select property "${propertyName}" in data source ${dataSourceId} needs ` +
+        `${plan.nextOptions.length} options in one schema update; Notion accepts at most ` +
+        `${MAX_SELECT_OPTIONS_PER_SCHEMA_UPDATE}. Existing options were preserved. ` +
+        "Use real page writes to add historical values, or reduce the requested active choices. " +
+        "Splitting the schema options list would remove omitted options.",
+      );
+    }
     await updateDataSource(dataSourceId, {
       [propertyName]: { select: { options: plan.nextOptions } },
     });
@@ -127,6 +150,7 @@ async function updateDataSourceSelect({
 }
 
 module.exports = {
+  MAX_SELECT_OPTIONS_PER_SCHEMA_UPDATE,
   optionNames,
   planSelectOptionUpdate,
   reconcileSelectOptions,

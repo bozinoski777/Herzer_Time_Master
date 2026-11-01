@@ -93,6 +93,9 @@ const WEEKDAYS = [
   "Samstag",
 ];
 const ROLLOVER_STATUSES = ["Ready", "Running", "Error"];
+const D4_VERIFICATION_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000];
+
+class D4VerificationMismatch extends Error {}
 
 const D1_BASE_SCHEMA = {
   "Vor- und Nachname": "title",
@@ -372,7 +375,18 @@ async function addSelectOptions(dataSourceId, dataSource, propertyName, names) {
     propertyName,
     desiredOptions: additions,
     retainExisting: true,
+    // D4 writes below always select these names on real archive entries.
+    // Above Notion's schema request limit, those writes add the new choices
+    // without replacing or truncating the historical option list.
+    allowPageWritesToAdd: true,
   });
+  if (plan.deferred?.length) {
+    console.log(
+      `D4 ${dataSourceId}: ${plan.deferred.length} new ${propertyName} option(s) ` +
+        "will be added by archive page writes; historical options/colors are retained, " +
+        "and new options use Notion's default color.",
+    );
+  }
   return plan.added.length;
 }
 
@@ -647,9 +661,20 @@ function verifyD4ExactMonth(worker, sourceMonth, sourceEntries, archiveRows) {
     .map((identity) => identity.row);
   indexSourceEntries(sourceEntries);
   if (scopedRows.length !== sourceEntries.length) {
-    throw new Error(
+    const expectedKeys = new Set(sourceEntries.map((entry) =>
+      daySyncKey(worker.workerKey, entry.sourceDate, entry.row.id),
+    ));
+    const actualKeys = new Set(scopedRows.map((row) => rowText(row, "Sync Key")));
+    const missingKeys = [...expectedKeys].filter((key) => !actualKeys.has(key));
+    const unexpectedKeys = [...actualKeys].filter((key) => !expectedKeys.has(key));
+    const details = [
+      ...(missingKeys.length ? [`Missing Sync Key(s): ${missingKeys.slice(0, 5).join(", ")}`] : []),
+      ...(unexpectedKeys.length ? [`Unexpected Sync Key(s): ${unexpectedKeys.slice(0, 5).join(", ")}`] : []),
+    ];
+    throw new D4VerificationMismatch(
       `${worker.name}: D4 exact-set verification failed for ${sourceMonth}; ` +
-        `expected ${sourceEntries.length} row(s), found ${scopedRows.length}. D3 remains unchanged`,
+        `expected ${sourceEntries.length} row(s), found ${scopedRows.length}. ` +
+        `${details.length ? `${details.join(". ")}. ` : ""}D3 remains unchanged`,
     );
   }
 
@@ -658,10 +683,36 @@ function verifyD4ExactMonth(worker, sourceMonth, sourceEntries, archiveRows) {
     const expectedKey = daySyncKey(worker.workerKey, entry.sourceDate, entry.row.id);
     const archiveRow = verifiedIndex.byKey.get(expectedKey);
     if (!archiveRow || !archiveValuesMatch(archiveRow, worker, entry.row)) {
-      throw new Error(`${worker.name}: D4 verification failed for ${expectedKey}; D3 remains unchanged`);
+      throw new D4VerificationMismatch(`${worker.name}: D4 verification failed for ${expectedKey}; D3 remains unchanged`);
     }
   }
   return true;
+}
+
+/**
+ * A successful page write can become visible to a data-source query later.
+ * Retry only fresh reads, never creates or source archival, and require the
+ * same exact identities and values on every attempt. Ownership/schema errors
+ * still fail immediately rather than being treated as propagation delays.
+ */
+async function waitForD4ExactMonth(worker, sourceMonth, sourceEntries, {
+  readArchiveRows = queryAll,
+  wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  reportRetry = (message) => console.warn(message),
+} = {}) {
+  for (let attempt = 0; ; attempt += 1) {
+    const archiveRows = await readArchiveRows(worker.d4DataSourceId);
+    try {
+      return verifyD4ExactMonth(worker, sourceMonth, sourceEntries, archiveRows);
+    } catch (failure) {
+      if (!(failure instanceof D4VerificationMismatch) ||
+          attempt === D4_VERIFICATION_RETRY_DELAYS_MS.length) throw failure;
+      const delay = D4_VERIFICATION_RETRY_DELAYS_MS[attempt];
+      reportRetry(`${errorMessage(failure)}. Rechecking D4 in ${delay / 1000}s ` +
+        `(${attempt + 1}/${D4_VERIFICATION_RETRY_DELAYS_MS.length}); no archive writes repeated.`);
+      await wait(delay);
+    }
+  }
 }
 
 function sourceSnapshotMatches(sourceEntries, freshRows, expectedSourceMonth) {
@@ -735,11 +786,10 @@ async function verifyManifestBarriers(worker, manifest) {
   )) {
     await updatePage(migration.row.id, migration.properties);
   }
-  verifyD4ExactMonth(
+  await waitForD4ExactMonth(
     worker,
     manifest.sourceMonth,
     sourceEntries,
-    await queryAll(worker.d4DataSourceId),
   );
   const d7Result = await syncWorkerToManagement(
     { ...worker, currentMonth: manifest.sourceMonth },
@@ -927,8 +977,7 @@ async function archiveMonth(worker, sourceMonth, sourceEntries, targetMonth) {
   // Fresh query is the archive barrier. Never touch D3 before every source
   // page has exactly one verified, value-identical D4 row and no stale row
   // remains for this worker/source month.
-  const verifiedRows = await queryAll(worker.d4DataSourceId);
-  verifyD4ExactMonth(worker, sourceMonth, sourceEntries, verifiedRows);
+  await waitForD4ExactMonth(worker, sourceMonth, sourceEntries);
 
   // D7 drives management reporting and D8 rollups. It is part of the same
   // safety barrier as D4 so late month-end edits cannot disappear when D3 is
@@ -1107,7 +1156,7 @@ async function rolloverWorker(worker, run) {
   if (
     resumedManifest ||
     oldMonths.length > 0 ||
-    (worker.rolloverStatus === "Running" && worker.currentMonth !== run.targetMonth)
+    ["Running", "Error"].includes(worker.rolloverStatus)
   ) {
     await rebuildD3StandortOptions(
       worker.d3DataSourceId,
@@ -1274,6 +1323,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  archiveMonth,
   archiveProperties,
   berlinDateParts,
   buildRolloverManifest,
@@ -1285,10 +1335,12 @@ module.exports = {
   monthForDate,
   parseRolloverManifest,
   resolveRunConfiguration,
+  rolloverWorker,
   sourceSnapshotMatches,
   staleD4Rows,
   validateD3Rows,
   validateRolloverRegistry,
   validIsoDate,
   verifyD4ExactMonth,
+  waitForD4ExactMonth,
 };
